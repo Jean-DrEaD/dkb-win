@@ -28,9 +28,14 @@ if (-not $py) {
   $env:Path = [Environment]::GetEnvironmentVariable("Path","User") + ";" + $env:Path
   $py = "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
 }
-foreach ($r in "tools\requirements.txt","launcher\requirements.txt") {
+$venvDir = Join-Path $PSScriptRoot ".venv"
+$venv = Join-Path $venvDir "Scripts\python.exe"
+if (-not (Test-Path $venv)) { & $py -m venv $venvDir | Out-Host }
+if (-not (Test-Path $venv)) { throw "nao foi possivel criar a .venv" }
+& $venv -m pip install -q --upgrade pip | Out-Host
+foreach ($r in "tools\requirements.txt","tools\requirements-installer.txt","launcher\requirements.txt") {
   $f = Join-Path $PSScriptRoot $r
-  if (Test-Path $f) { & $py -m pip install --user -q -r $f | Out-Host }
+  if (Test-Path $f) { & $venv -m pip install -q -r $f | Out-Host; if ($LASTEXITCODE) { throw "pip falhou em $r" } }
 }
 
 Passo ".NET SDK 8"
@@ -47,3 +52,4 @@ if (-not $hasNet) {
 
 Write-Host "`nFerramentas prontas." -ForegroundColor Green
 Stop-Transcript | Out-Null
+

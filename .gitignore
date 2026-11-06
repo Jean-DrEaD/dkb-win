@@ -94,3 +94,4 @@ build/
 backup*/
 
 ferramentas.log
+.venv/
