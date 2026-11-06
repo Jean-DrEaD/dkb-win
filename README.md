@@ -24,3 +24,6 @@ Recompilacao estatica de **Donkey Kong Bananza** para Windows (Vulkan).
 - Integracao, testes e correcoes deste fork: Jean-DrEaD.
 
 Donkey Kong Bananza e marca da Nintendo. Projeto de fas, sem afiliacao com a Nintendo.
+
+## Instalador grafico
+De dois cliques em Instalar.bat, escolha as pastas ExeFS e RomFS e clique em Compilar.
