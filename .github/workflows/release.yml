@@ -1,0 +1,21 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pacote do codigo-fonte
+        shell: pwsh
+        run: |
+          $n = "dkb-win-${{ github.ref_name }}-src.zip"
+          git archive --format=zip -o $n HEAD
+          if (git ls-files | Select-String -Pattern '\.(nso|nca|nsp|xci|exe)$|^game/') { throw "arquivo proibido" }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dkb-win-*-src.zip
+          generate_release_notes: true
