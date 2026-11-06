@@ -7,7 +7,7 @@ Recompilacao estatica de **Donkey Kong Bananza** para Windows (Vulkan).
 ## Como compilar
 1. Instale o MSYS2 (clang64) com os pacotes sdl3, opus, zstd, ninja e lld.
 2. Coloque o dump em game\exefs e game\romfs.
-3. Rode .\build-dkb.ps1 (cerca de 25 min).
+3. Rode .\build-dkb.ps1 (cerca de 25 min). O jogo fica na pasta jogo\.
 
 ## totk.ini recomendado
 
@@ -17,7 +17,7 @@ Recompilacao estatica de **Donkey Kong Bananza** para Windows (Vulkan).
     astc_bc = 0
 
 ## Creditos
-- Projeto base do recompilador: https://github.com/Jean-DrEaD/dkb-delano.git, https://github.com/sagaopc/dkb-pc-recomp.git
+- Projeto base do recompilador: https://github.com/sagaopc/dkb-pc-recomp.git
 - **STS78721/dkb-BANANAS**: native GS do terreno, correcao de crash em cutscene, DLSS, launcher e overlay.
 - **Eden** e o fork **PokeDinner**: referencia para texturas esparsas/ASTC.
 - VMA (AMD), SDL3, Opus, Zstandard, libvpx, NVIDIA NGX/DLSS, MSYS2/LLVM-Clang.
@@ -27,3 +27,4 @@ Donkey Kong Bananza e marca da Nintendo. Projeto de fas, sem afiliacao com a Nin
 
 ## Instalador grafico
 De dois cliques em Instalar.bat, escolha as pastas ExeFS e RomFS e clique em Compilar.
+
