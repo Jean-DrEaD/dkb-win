@@ -1,21 +1,33 @@
-name: release
+name: Release Instalador
 on:
   push:
-    tags: ["v*"]
+    tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Pacote do codigo-fonte
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publicar Instalador.exe
         shell: pwsh
         run: |
-          $n = "dkb-win-${{ github.ref_name }}-src.zip"
-          git archive --format=zip -o $n HEAD
-          if (git ls-files | Select-String -Pattern '\.(nso|nca|nsp|xci|exe)$|^game/') { throw "arquivo proibido" }
-      - uses: softprops/action-gh-release@v2
+          dotnet publish DkbBuilder/DkbBuilder.csproj -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true -o out
+          Copy-Item out\DkbBuilder.exe Instalador.exe
+          if ((Get-Item Instalador.exe).Length -lt 10MB) { throw "Instalador.exe pequeno demais" }
+      - uses: actions/upload-artifact@v4
         with:
-          files: dkb-win-*-src.zip
-          generate_release_notes: true
+          name: Instalador
+          path: Instalador.exe
+      - name: Anexar na release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Instalador.exe
+          make_latest: true
