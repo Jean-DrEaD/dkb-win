@@ -81,18 +81,5 @@ desktop.ini
 /launcher/dist/
 /dist/
 
-# dkb-win: nunca publicar
-fluxo.md
-game/
-build/
-*.exe
-*.log
-*.nso
-*.nca
-*.nsp
-*.xci
-backup*/
-
-ferramentas.log
-.venv/
-Instalar.bat.new
+backup/
+.portable/

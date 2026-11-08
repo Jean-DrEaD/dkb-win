@@ -1,0 +1,161 @@
+using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
+using System.Net.Http;
+using System.Text.Json;
+using System.Windows;
+
+namespace DkbBuilder;
+
+/// The game's update offer (host/hos_update.c) starts this app with --update <game folder> --tag <release>. When these tools are
+/// not that release, the release's DkbBuilder.zip is downloaded and unpacked beside this app, and the new app is started with
+/// --fetched to build the folder; when they are, the folder is built again here (nx2/make_game.py --update: from the game files the
+/// folder keeps).
+static class Updater
+{
+    const string Latest = "https://api.github.com/repos/Jean-DrEaD/dkb-win/releases/latest";
+    const string Asset = "DkbBuilder.zip";
+    const string SetupAsset = "DkbBuilder.exe";            // (the setup, builder/setup/setup.c: a release holds it and its list)
+    const string SetupList = "hookshot-setup.txt";              // (scripts/make_setup_parts.py)
+
+    public static async void FromCommandLine(MainWindow w)
+    {
+        var a = Environment.GetCommandLineArgs();
+        string? folder = null, tag = null;
+        var fetched = false;
+        for (var i = 1; i < a.Length; i++)
+        {
+            if (a[i] == "--update" && i + 1 < a.Length) folder = a[++i];
+            else if (a[i] == "--tag" && i + 1 < a.Length) tag = a[++i];
+            else if (a[i] == "--fetched") fetched = true;
+        }
+        if (folder == null) return;
+        w.BeginUpdate(folder);
+        var tools = Tools.Find();
+        if (tools == null)
+        {
+            w.DownloadFailed("The DKB tools were not found next to this app.");
+            return;
+        }
+        // (already the new release, or just downloaded: no second download, whatever its version file says)
+        if (fetched || (tag != null && tools.Version == tag))
+        {
+            w.UpdateBuild(tools, folder);
+            return;
+        }
+        try
+        {
+            var token = w.DownloadToken;
+            using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("DkbBuilder");
+            w.Note("Asking GitHub for the latest release");
+            string? newTag = null, url = null, setupUrl = null;
+            long size = 0;
+            var hasList = false;
+            using (var ask = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+            using (var both = CancellationTokenSource.CreateLinkedTokenSource(token, ask.Token))
+            using (var doc = JsonDocument.Parse(await http.GetStringAsync(Latest, both.Token)))
+            {
+                newTag = doc.RootElement.GetProperty("tag_name").GetString();
+                foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
+                {
+                    var assetName = asset.GetProperty("name").GetString();
+                    if (assetName == Asset)
+                    {
+                        url = asset.GetProperty("browser_download_url").GetString();
+                        size = asset.GetProperty("size").GetInt64();
+                    }
+                    else if (assetName == SetupAsset) setupUrl = asset.GetProperty("browser_download_url").GetString();
+                    else if (assetName == SetupList) hasList = true;
+                }
+            }
+            if (newTag == null || (url == null && setupUrl == null)) throw new InvalidOperationException("The latest release has no " + Asset + ".");
+            if (newTag == tools.Version)
+            {
+                w.UpdateBuild(tools, folder);
+                return;
+            }
+            var name = string.Concat(newTag.Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.'));
+            var cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DkbBuilder", "update");
+            Directory.CreateDirectory(cache);
+            // (a release with the setup and its list: the setup downloads only the parts that changed since the version installed (a few MB
+            // when only the builder's code did), checks them and starts the new builder with these arguments. The whole zip is the fallback)
+            if (setupUrl != null && hasList)
+            {
+                w.Note($"Downloading the update for {newTag}");
+                var setup = Path.Combine(cache, SetupAsset);
+                var bytes = await http.GetByteArrayAsync(setupUrl, token);
+                await File.WriteAllBytesAsync(setup, bytes, token);
+                var ssi = new ProcessStartInfo(setup) { UseShellExecute = false, WorkingDirectory = cache };
+                foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) ssi.ArgumentList.Add(arg);
+                Process.Start(ssi);
+                Application.Current.Shutdown();
+                return;
+            }
+            if (url == null) throw new InvalidOperationException("The latest release has no " + Asset + ".");
+            var zip = Path.Combine(cache, "DkbBuilder-" + name + ".zip");
+            w.Note($"Downloading {Asset} of {newTag} ({size >> 20} MB)");
+            using (var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token))
+            {
+                response.EnsureSuccessStatusCode();
+                var total = response.Content.Headers.ContentLength ?? size;
+                await using var from = await response.Content.ReadAsStreamAsync(token);
+                await using var to = File.Create(zip);
+                var buffer = new byte[1 << 20];
+                long have = 0;
+                var shown = DateTime.MinValue;
+                for (int n; (n = await from.ReadAsync(buffer, token)) > 0;)
+                {
+                    await to.WriteAsync(buffer.AsMemory(0, n), token);
+                    have += n;
+                    if (total > 0 && DateTime.UtcNow - shown > TimeSpan.FromMilliseconds(200))
+                    {
+                        shown = DateTime.UtcNow;
+                        w.DownloadProgress(Math.Min(1.0, (double)have / total));
+                    }
+                }
+                if (total > 0 && have != total) throw new IOException($"The download ended early ({have >> 20} of {total >> 20} MB).");
+            }
+            w.Note("Unpacking the new version");
+            // (beside this app when that folder takes writing, else in the app data folder)
+            var parent = Directory.GetParent(AppContext.BaseDirectory.TrimEnd('\\', '/'))!.FullName;
+            string target;
+            try
+            {
+                target = await Unpack(zip, Path.Combine(parent, "DkbBuilder " + name));
+            }
+            catch (Exception e) when (e is UnauthorizedAccessException or IOException)
+            {
+                target = await Unpack(zip, Path.Combine(Path.GetDirectoryName(cache)!, "builders", name));
+            }
+            try { File.Delete(zip); } catch (Exception) { }
+            var exe = Path.Combine(target, "DkbBuilder.exe");
+            if (!File.Exists(exe)) throw new FileNotFoundException("The download has no DkbBuilder.exe (your antivirus may have removed it).");
+            var si = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = target };
+            foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) si.ArgumentList.Add(arg);
+            Process.Start(si);
+            Application.Current.Shutdown();
+        }
+        catch (OperationCanceledException)
+        {
+            w.DownloadFailed("The download was cancelled. Your game folder is unchanged.");
+        }
+        catch (Exception e)
+        {
+            w.DownloadFailed(e.Message + " Your game folder is unchanged; you can also download the new version from GitHub yourself.");
+        }
+    }
+
+    /// The zip's DkbBuilder folder, as target (an older one there replaced)
+    static async Task<string> Unpack(string zip, string target)
+    {
+        var part = target + ".part";
+        if (Directory.Exists(part)) Directory.Delete(part, true);
+        await Task.Run(() => ZipFile.ExtractToDirectory(zip, part));
+        var inner = Path.Combine(part, "DkbBuilder");
+        if (Directory.Exists(target)) Directory.Delete(target, true);
+        Directory.Move(Directory.Exists(inner) ? inner : part, target);
+        if (Directory.Exists(part)) Directory.Delete(part, true);
+        return target;
+    }
+}

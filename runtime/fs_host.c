@@ -33,7 +33,7 @@
 #define NMOUNTS 16
 #define PATH_CAP 1100
 
-enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO };   // M_SAVE: the working copy; M_SAVE_RO: the committed save
+enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO, M_AOC };   // M_AOC: add-on content RomFS folder (DKB_AOC_DIR)   // M_SAVE: the working copy; M_SAVE_RO: the committed save
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
 typedef struct { PlatFile *h; int mode, save; } File;   // h NULL = free; save: on a save-data mount
@@ -1141,6 +1141,58 @@ static void ov_read_cache_list(Cpu *c) { ret_x(c, read_cache_list(arg_p(c, 0), a
 static void ov_close_cache_list(Cpu *c) { close_cache_list(arg_x(c, 0)); }
 // The fs priority only orders I/O inside the system fs process; host I/O is unordered.
 static void ov_set_priority(Cpu *c) { (void)c; }
+// bool nn::fs::IsMounted(const char *): 3.2.0 asks before mounting; same test as unmount (mounts[] or the RomFS name).
+static void ov_is_mounted(Cpu *c) {
+    ready();
+    const char *name = arg_p(c, 0);
+    int found = 0;
+    plat_mutex_lock_shared(&lock);
+    for (int i = 0; i < NMOUNTS; i++)
+        if (name && mounts[i].kind && !strcmp(mounts[i].name, name)) found = 1;
+    plat_mutex_unlock_shared(&lock);
+    size_t n = name ? strlen(name) : 0;
+    if (!found && n && n < 32) {
+        char probe[40];
+        snprintf(probe, sizeof probe, "%s:", name);
+        found = romfs_owns(probe);
+    }
+    ret_x(c, found ? 1 : 0);
+}
+// Add-on content stays off until phase 2 (CountAddOnContent answers 0): size 0, mount "not found".
+static void ov_query_aoc_cache(Cpu *c) {
+    uint64_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+// DLC: DKB_AOC_DIR, ou a pasta "dlc\romfs" ao lado do dkb.exe
+const char *dkb_aoc_dir(void) {
+    static char buf[1024]; static int done;
+    const char *e = getenv("DKB_AOC_DIR");
+    if (e && *e) return e;
+    if (!done) {
+        done = 1; buf[0] = 0;
+        char *p = 0;
+        if (_get_pgmptr(&p) == 0 && p) {
+            strncpy(buf, p, 900); buf[900] = 0;
+            char *s = strrchr(buf, '\\');
+            if (s) { strcpy(s + 1, "dlc\\romfs"); struct stat st; if (stat(buf, &st) != 0) buf[0] = 0; }
+            else buf[0] = 0;
+        }
+    }
+    return buf[0] ? buf : NULL;
+}
+// Phase 2: DKB_AOC_DIR = DLC romfs folder; index 1 = 040074A01BF13001.
+static void ov_mount_aoc(Cpu *c) {
+    const char *name = arg_p(c, 0);
+    int index = (int)arg_x(c, 1);
+    const char *dir = dkb_aoc_dir();
+    rt_log("aoc: MountAddOnContent %s index %d", name ? name : "(null)", index);
+    if (!dir || !*dir || index != 1 || plat_fs_kind(dir) != PLAT_FS_DIR) { ret_x(c, FS_R_TARGET_NOT_FOUND); return; }
+    ret_x(c, mount_add(name, M_AOC, dir));
+}
 #undef I32
 #undef I64
 
@@ -1213,6 +1265,9 @@ HOST_OVERRIDE(S_OPEN_CACHE_LIST, ov_open_cache_list);
 HOST_OVERRIDE(S_READ_CACHE_LIST, ov_read_cache_list);
 HOST_OVERRIDE(S_CLOSE_CACHE_LIST, ov_close_cache_list);
 HOST_OVERRIDE(S_SET_PRIORITY, ov_set_priority);
+HOST_OVERRIDE("_ZN2nn2fs9IsMountedEPKc", ov_is_mounted);
+HOST_OVERRIDE("_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi", ov_query_aoc_cache);
+HOST_OVERRIDE("_ZN2nn2fs17MountAddOnContentEPKciPvm", ov_mount_aoc);
 
 // ---- --probe-fs
 // Every check calls the overrides the way guest code does: by synthetic address through rt_call, with AAPCS64

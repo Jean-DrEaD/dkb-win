@@ -167,7 +167,7 @@ LAUNCHER_CONFIG = load_config()
 def set_game_dir(path):
     global GAME_DIR, INI_PATH, PROFILE_DIR, MODS_DIR, ACTIVE_MODS_DIR, LOGS_DIR, SHADER_CACHE_DIR
     GAME_DIR=Path(path).resolve()
-    INI_PATH=GAME_DIR/"totk.ini"
+    INI_PATH=(GAME_DIR/"totk.ini") if (GAME_DIR/"totk.ini").exists() and not (GAME_DIR/"dkb.ini").exists() else (GAME_DIR/"dkb.ini")
     PROFILE_DIR=Path(LAUNCHER_CONFIG.get("profile_dir") or (GAME_DIR.parent/"profile-dkb100"))
     if not PROFILE_DIR.exists() and (GAME_DIR.parent/"profile-dkb100").exists(): PROFILE_DIR=GAME_DIR.parent/"profile-dkb100"
     if not PROFILE_DIR.exists() and (GAME_DIR/"profile").exists(): PROFILE_DIR=GAME_DIR/"profile"

@@ -34,7 +34,7 @@ CONTROLLER_UI_CHOICES = [
 
 def install_controller_ui(choice_id: str, target_game_dir: str) -> bool:
     """Configures the selected controller layout in totk.ini / dkb.ini."""
-    ini_path = os.path.join(target_game_dir, "totk.ini")
+    ini_path = os.path.join(target_game_dir, "totk.ini" if os.path.exists(os.path.join(target_game_dir, "totk.ini")) and not os.path.exists(os.path.join(target_game_dir, "dkb.ini")) else "dkb.ini")
     if not os.path.isfile(ini_path):
         ini_path = os.path.join(target_game_dir, "dkb.ini")
         

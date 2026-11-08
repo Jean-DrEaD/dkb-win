@@ -25,6 +25,8 @@ STATE = 'dkb-install.json'
 OWNER = '.dkb-setup-owner.json'
 DEST_OWNER = '.dkb-install-owner.json'
 GAME = 'dkb100'
+VERSIONS = ('dkb100', 'dkb320')
+ACTIVE = 'dkb100'
 EXE = '.exe' if os.name == 'nt' else ''
 CHUNK = 8 << 20
 
@@ -73,7 +75,7 @@ def plain_tree(root):
 
 def plain_destination(dest, dlls=()):
     # profile/ and caches belong to the player and are never traversed or written by setup.
-    files = (STATE, STATE + '.tmp', DEST_OWNER, '.dkb-setup.lock', 'totk.ini', 'totk.ini.tmp',
+    files = (STATE, STATE + '.tmp', DEST_OWNER, '.dkb-setup.lock', 'dkb.ini', 'dkb.ini.tmp', 'totk.ini', 'totk.ini.tmp',
              'romfs-index.bin', 'dkb' + EXE, 'totk_xlate' + EXE, 'totk_xlate.id', *(p.name for p in dlls))
     for name in ('exefs', 'romfs', *files, *(name + '.setup-part' for name in files)):
         plain_tree(dest / name)
@@ -136,7 +138,17 @@ def pack_manifest(folder):
 
 
 def expected_exefs(layout, exefs):
-    expected = json.loads((layout.tools / 'data' / 'expected-dkb100.json').read_text(encoding='utf-8'))
+    global ACTIVE
+    main = exefs / 'main'
+    ensure_plain(main)
+    h = sha256(main) if main.is_file() else ''
+    ACTIVE = 'dkb100'
+    for v in VERSIONS:
+        f = layout.tools / 'data' / f'expected-{v}.json'
+        if f.is_file() and json.loads(f.read_text(encoding='utf-8'))['exefs_sha256']['main'] == h:
+            ACTIVE = v
+            break
+    expected = json.loads((layout.tools / 'data' / f'expected-{ACTIVE}.json').read_text(encoding='utf-8'))
     hashes = expected['exefs_sha256']
     for name, value in hashes.items():
         p = exefs / name
@@ -528,7 +540,7 @@ class Lift(Step):
         gen.mkdir(parents=True, exist_ok=True)
         run_tool(ctx, self.id, [ctx.layout.python, ctx.layout.recomp / 'gen.py', '--exefs', ctx.dest / 'exefs',
                                  '--out', gen, '--modules', 'main,sdk', '--jobs', ctx.options.jobs,
-                                 '--patches', ctx.layout.recomp / 'patches-dkb100.txt'])
+                                 '--patches', ctx.layout.recomp / f'patches-{ACTIVE}.txt'])
         manifest = json.loads((gen / 'main' / 'manifest.json').read_text(encoding='utf-8'))
         if manifest.get('stats', {}).get('patched_sites', 0) < 1:
             raise InstallError('dkb.patches_missing')
@@ -555,8 +567,8 @@ class Compile(Step):
 
     def run(self, ctx):
         out = ctx.temp / 'build'
-        args = [ctx.layout.python, ctx.layout.tools / 'build_game.py', '--version', GAME, '--expected',
-                ctx.layout.tools / 'data' / 'expected-dkb100.json', '--gen', ctx.temp / 'gen', '--out', out,
+        args = [ctx.layout.python, ctx.layout.tools / 'build_game.py', '--version', ACTIVE, '--expected',
+                ctx.layout.tools / 'data' / f'expected-{ACTIVE}.json', '--gen', ctx.temp / 'gen', '--out', out,
                 '--modules', 'main,sdk', '--exefs', ctx.dest / 'exefs', '--romfs', ctx.dest / 'romfs',
                 '--profile', ctx.dest / 'profile', '--runtime', ctx.layout.runtime, '--toolchain', ctx.layout.llvm,
                 '--ninja', ctx.layout.ninja, '--jobs', ctx.options.jobs, '--full-build']
@@ -580,6 +592,8 @@ class Prepare(Step):
         return record.get('selftest') is True
 
     def run(self, ctx):
+        ensure_plain(ctx.dest / 'dkb.ini')
+        ensure_plain(ctx.dest / 'dkb.ini.tmp')
         ensure_plain(ctx.dest / 'totk.ini')
         ensure_plain(ctx.dest / 'totk.ini.tmp')
         ini.write(ctx.dest, ctx.state['lang'], ctx.layout.ini_example)

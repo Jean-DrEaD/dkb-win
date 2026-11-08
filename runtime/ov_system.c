@@ -24,6 +24,7 @@
 #include "host.h"
 #include "ov.h"
 #include "platform/platform.h"
+const char *dkb_aoc_dir(void);   // fs_host.c
 
 #define NFP_R_DEVICE_NOT_FOUND 0x8073u     // nfp: no NFC reader on the host
 #define ACCOUNT_R_INVALID 0x7c67u          // MacNativeGames' result for an unknown user handle or uid
@@ -303,8 +304,25 @@ static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: no add-on content"
 static void ov_aoc_list(Cpu *c) {
     int offset = (int)arg_x(c, 1), count = (int)arg_x(c, 2);
     if (offset < 0 || count < 0) rt_fatal("aoc: ListAddOnContent range %d+%d", offset, count);
-    ret_x(c, 0);
+    int32_t *out = arg_p(c, 0);
+    const char *dir = dkb_aoc_dir();
+    int n = (dir && *dir && offset == 0 && count > 0 && out) ? 1 : 0;
+    if (n) out[0] = 1;
+    rt_log("aoc: ListAddOnContent %d+%d -> %d", offset, count, n);
+    ret_x(c, n);
 }
+// int CountAddOnContent(): 3.2.0's main asks how many add-on contents exist: none (DLC not mounted yet)
+static void ov_aoc_count(Cpu *c) {
+    const char *dir = dkb_aoc_dir();
+    int n = (dir && *dir) ? 1 : 0;
+    rt_log("aoc: CountAddOnContent -> %d", n);
+    ret_x(c, n);
+}
+static void ov_aoc_lost(Cpu *c) { rt_log("aoc: ShowAddOnContentLostError"); ret_x(c, 0); }
+
+// BCAT (3.2.0): sem servico -> sem conteudo
+static void ov_bcat_ok(Cpu *c) { ret_x(c, 0); }
+static void ov_bcat_fail(Cpu *c) { ret_x(c, 0x27A) /* bcat: indisponivel */; }
 static void ov_err_context(Cpu *c) { (void)c; rt_log("err: error contexts stay local"); }
 static void ov_pctl_initialize(Cpu *c) { (void)c; rt_log("pctl: no parental controls"); }
 static void ov_abort_observer(Cpu *c) { (void)c; rt_log("diag: the host crash reporter observes aborts"); }
@@ -878,11 +896,12 @@ static void ov_album_orientation(Cpu *c) { (void)c; }
 // void nn::oe::{Enter,Leave}ExitRequestHandlingSection(): no exit request ever arrives from a host system applet
 static void ov_exit_section(Cpu *c) { (void)c; }
 // void nn::oe::GetDisplayVersion(DisplayVersion *out): 16-byte null-terminated version string
+extern const char rt_display_version[];   // build_game.py: modules.c
 static void ov_display_version(Cpu *c) {
     char *out = arg_p(c, 0);
     if (out) {
         memset(out, 0, 16);
-        memcpy(out, "1.0.0", 5);
+        strncpy(out, rt_display_version, 15);
     }
 }
 
@@ -940,6 +959,23 @@ HOST_OVERRIDE("_ZN2nn3err9ShowErrorENS_6ResultE", ov_show_error);
 HOST_OVERRIDE("nndiagStartup", ov_diag_startup);
 HOST_OVERRIDE("_ZN2nn3aoc10InitializeEv", ov_aoc_initialize);
 HOST_OVERRIDE("_ZN2nn3aoc16ListAddOnContentEPiii", ov_aoc_list);
+    HOST_OVERRIDE("_ZN2nn3aoc17CountAddOnContentEv", ov_aoc_count);
+HOST_OVERRIDE("_ZN2nn3aoc25ShowAddOnContentLostErrorEPKii", ov_aoc_lost);
+    HOST_OVERRIDE("_ZN2nn4bcat10InitializeEv", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn3hid14InitializeJcmsEPvm", ov_bcat_ok); // hid Jcms (3.2.0): sem servico hid
+    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFile5CloseEv", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFileC1Ev", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFileD1Ev", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn4bcat21DeliveryCacheProgress6UpdateEv", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn4bcat21DeliveryCacheProgressC1Ev", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn4bcat21DeliveryCacheProgressD1Ev", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn4bcat27UnmountDeliveryCacheStorageEv", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn4bcat30CancelSyncDeliveryCacheRequestEv", ov_bcat_ok);
+    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFile4OpenEPKc", ov_bcat_fail);
+    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFile4ReadEPmlPvm", ov_bcat_fail);
+    HOST_OVERRIDE("_ZN2nn4bcat24RequestSyncDeliveryCacheEPNS0_21DeliveryCacheProgressE", ov_bcat_fail);
+    HOST_OVERRIDE("_ZN2nn4bcat24RequestSyncDeliveryCacheEPNS0_21DeliveryCacheProgressEPKc", ov_bcat_fail);
+    HOST_OVERRIDE("_ZN2nn4bcat25MountDeliveryCacheStorageEv", ov_bcat_fail);
 HOST_OVERRIDE("_ZN2nn3err26InitializeContextWriterApiEv", ov_err_context);
 HOST_OVERRIDE("_ZN2nn4pctl10InitializeEv", ov_pctl_initialize);
 HOST_OVERRIDE("_ZN2nn4diag34InitializeApplicationAbortObserverEv", ov_abort_observer);
@@ -1064,7 +1100,39 @@ HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext9GetResultEv", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn5prepo12AsyncContextD1Ev", ov_noop);
 HOST_OVERRIDE("_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE", ov_account_offline);
+HOST_OVERRIDE("_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account12AsyncContext14GetSystemEventEPNS_2os11SystemEventE", ov_async_event);
 HOST_OVERRIDE("_ZN2nn7account12AsyncContext9GetResultEv", ov_account_offline);
+
+// nn::streamplay (3.2.0): no streaming on the host -> init ok, 0 sizes, 0 guests, disconnected.
+static void ov_stpl_zero(Cpu *c) { ret_x(c, 0); }
+static void ov_stpl_conn(Cpu *c) { uint32_t *o = arg_p(c, 0); if (o) *o = 0; ret_x(c, 0); }
+HOST_OVERRIDE("_ZN2nn10streamplay10InitializeENS0_14StreamPlayTypeENS0_13StreamingModeEPvm", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay12CloseSessionEv", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay14StartStreamingEv", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadFullKeyStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadJoyDualStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadJoyLeftStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid17NpadHandheldStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid17NpadJoyRightStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay18GetConnectionStateEPNS0_15ConnectionStateE", ov_stpl_conn);
+HOST_OVERRIDE("_ZN2nn10streamplay18GetGuestJcmsHandleERKNS0_10GuestPadIdERKNS_3hid8JcmsTypeE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay18GetGuestJcmsStatesEPNS0_14GuestJcmsStateEiRKNS0_15GuestJcmsHandleE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay19GetGuestPadStyleSetERKNS0_10GuestPadIdE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay20GuestVibrationTarget29SetGuestVibrationDeviceHandleERKNS0_26GuestVibrationDeviceHandleE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay20GuestVibrationTarget31UnsetGuestVibrationDeviceHandleEv", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay20GuestVibrationTargetC1Ev", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay23GetGuestNpadJoyHoldTypeEv", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay23SetGuestNpadJoyHoldTypeENS_3hid15NpadJoyHoldTypeE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay25SetSupportedHidFeatureSetENS_4util10BitFlagSetILi32ENS0_13HidFeatureTagEEE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay27GetGuestSixAxisSensorStatesEPNS0_23GuestSixAxisSensorStateEiRKNS0_24GuestSixAxisSensorHandleE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay27GetGuestVibrationDeviceInfoEPNS_3hid19VibrationDeviceInfoERKNS0_26GuestVibrationDeviceHandleE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay28GetGuestSixAxisSensorHandlesEPNS0_24GuestSixAxisSensorHandleEiRKNS0_10GuestPadIdENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay29SetSupportedGuestNpadStyleSetENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay30GetConnectionStateChangedEventEv", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay30GetGuestVibrationDeviceHandlesEPNS0_26GuestVibrationDeviceHandleEiRKNS0_10GuestPadIdENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay31OpenSessionWithMatchmakeSupportEPNS0_11SessionInfoERKNS0_15MatchmakeConfigE", ov_stpl_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay8FinalizeEv", ov_stpl_zero);

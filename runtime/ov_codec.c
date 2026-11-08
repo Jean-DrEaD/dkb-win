@@ -52,6 +52,7 @@ typedef struct {
     uint16_t w, h;
     int64_t pts;       // nanoseconds (nn::TimeSpan)
     int eos;
+    int flushed;   // 1: a flush completed this buffer's fence (reported signalled once)
     uint8_t *nv12;     // w*h luma, then cw*ch interleaved UV pairs
 } Slot;
 
@@ -279,7 +280,7 @@ static void ov_vp9_flush(Cpu *c) {
     Dec *d = dec_of(arg_x(c, 0));
     if (d)
         for (int i = 0; i < SLOTS; i++)
-            if (d->slot[i].state == S_FILLED) d->slot[i].state = S_WAIT;   // still reserved; its picture is dropped
+            if (d->slot[i].state == S_FILLED || d->slot[i].state == S_WAIT) d->slot[i].state = S_WAIT, d->slot[i].flushed = 1;   // still reserved; picture dropped, its fence completes
     if (d) queue_drop(d);   // and so are the packets not decoded yet
     plat_mutex_unlock(&lock);
     TRACE("flush");
@@ -600,6 +601,39 @@ HOST_OVERRIDE("_ZN2nn6syncpt3sdk21RequestSyncPointEventEPNS1_18SyncPointEventTyp
               ov_sp_request);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk20CancelSyncPointEventEPNS1_18SyncPointEventTypeE", ov_sp_cancel);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk21DestroySyncPointEventEPNS1_18SyncPointEventTypeE", ov_sp_nop);
+// SyncPointHandle waits (3.2.0 SDK, VP9 path): the host has no sync point, every handle is already signalled
+// void WaitSyncPoint(const SyncPointHandle &) / Result TimedWaitSyncPoint(const SyncPointHandle &, TimeSpan)
+// -1: not a decoder fence (signalled); otherwise the state of the fence's buffer
+static int fence_state(const uint32_t *h) {
+    uint32_t tok = h ? *h : 0;
+    if ((tok & 0xffff0000u) != FENCE_TAG || (tok >> 8 & 0xff) >= DECODERS || (tok & 0xff) >= SLOTS) return -1;
+    plat_mutex_lock(&lock);
+    Slot *sl = &decs[tok >> 8 & 0xff].slot[tok & 0xff];
+    int st = sl->state;
+    if (sl->flushed) { sl->flushed = 0; st = -1; }   // flush completes the pending fence
+    plat_mutex_unlock(&lock);
+    return st;
+}
+static void ov_sp_wait_ok(Cpu *c) {
+    int st = fence_state(arg_p(c, 0));
+    TRACE("wait sync point: state %d", st);
+    ret_x(c, 0);
+}
+// Result TimedWaitSyncPoint: a decoder fence without its picture times out (try again)
+static void ov_sp_timedwait(Cpu *c) {
+    int st = fence_state(arg_p(c, 0));
+    TRACE("timedwait sync point: state %d", st);
+    ret_x(c, st == S_WAIT ? R_NOT_READY : 0);
+}
+// bool TryWaitSyncPoint(const SyncPointHandle &)
+static void ov_sp_trywait_ok(Cpu *c) {
+    int st = fence_state(arg_p(c, 0));
+    TRACE("trywait sync point: state %d", st);
+    ret_x(c, st != S_WAIT);
+}
+HOST_OVERRIDE("_ZN2nn6syncpt3sdk13WaitSyncPointERKNS1_15SyncPointHandleE", ov_sp_wait_ok);
+HOST_OVERRIDE("_ZN2nn6syncpt3sdk16TryWaitSyncPointERKNS1_15SyncPointHandleE", ov_sp_trywait_ok);
+HOST_OVERRIDE("_ZN2nn6syncpt3sdk18TimedWaitSyncPointERKNS1_15SyncPointHandleENS_8TimeSpanE", ov_sp_timedwait);
 // Result Get{Vp9,Av1}DecoderOutputBufferProperties(u16 *w, u16 *h, u16 *, u16 *, TimeSpan *pts, bool *end, Type *, u32 index)
 // (Switch 2 SDK 20: no ColorSpace argument)
 static void ov_props2(Cpu *c) {

@@ -108,12 +108,12 @@ static void log_open(int game) {
         strcpy(cut, "/logs");
         plat_file_mkdir_p(dir);
         for (int i = LOG_KEEP - 1; i > 0; i--) {   // totk.3.log -> totk.4.log, ..., totk.log -> totk.1.log
-            if (i > 1) snprintf(from, sizeof from, "%s/totk.%d.log", dir, i - 1);
-            else snprintf(from, sizeof from, "%s/totk.log", dir);
-            snprintf(to, sizeof to, "%s/totk.%d.log", dir, i);
+            if (i > 1) snprintf(from, sizeof from, "%s/dkb.%d.log", dir, i - 1);
+            else snprintf(from, sizeof from, "%s/dkb.log", dir);
+            snprintf(to, sizeof to, "%s/dkb.%d.log", dir, i);
             if (plat_file_exists(from)) plat_file_replace(from, to);
         }
-        snprintf(g_log_path, sizeof g_log_path, "%s/totk.log", dir);
+        snprintf(g_log_path, sizeof g_log_path, "%s/dkb.log", dir);
         g_log_file = plat_append_open(g_log_path);
     }
     if (!g_log_file) {

@@ -4,7 +4,7 @@ This Windows desktop launcher adapts the layout and feature set of the SteelTemp
 
 ## English interface
 
-The launcher interface and controller guide are in English. New settings use English for the game language and the in-game menu. The launcher only writes settings the current DKB runtime recognizes. The runtime still uses the inherited `totk.ini` filename and `TOTK_` environment-variable prefix internally; these are compatibility names, not user-facing game branding.
+The launcher interface and controller guide are in English. New settings use English for the game language and the in-game menu. The launcher only writes settings the current DKB runtime recognizes. Settings are saved in `dkb.ini` (an older `totk.ini` is still read). The runtime keeps the inherited `TOTK_` environment-variable prefix internally (`DKB_` also works).
 
 ## Features
 
@@ -23,7 +23,7 @@ The current runtime does not provide DLSS, XeSS, frame generation, or Reflex set
 1. Build DKB Recomp using the project instructions and your own game data.
 2. Run `DKBLauncher.exe` from the install root next to the `jogo` folder, or run `python launcher/DKBLauncher.py` from this repository.
 3. If the game is not found automatically, choose the folder that contains `dkb.exe`.
-4. Select settings and use Play. Settings are saved beside the game executable in the inherited `totk.ini` file.
+4. Select settings and use Play. Settings are saved beside the game executable in `dkb.ini`.
 
 If `jogo/amigos/jogar-dk.ps1` exists, Play uses it so locally configured launch flags are preserved. Otherwise, Play runs `dkb.exe` directly. The launcher does not install or update the game.
 

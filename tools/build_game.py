@@ -150,6 +150,7 @@ WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
+DKB_DISPLAY = {'dkb100': '1.0.0', 'dkb320': '3.2.0'}
 DISPLAY_VERSIONS = {'v0': '1.0.0', 'v111': '1.1.1', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}
 
 GiB = 1 << 30
@@ -301,6 +302,7 @@ def module_glue(layout, linked, hashes, paths, version, title_id=0x040074a01bf12
     number = int(DISPLAY_VERSIONS[version].replace('.', '')) if version in DISPLAY_VERSIONS else 0   # 1.4.3 -> 143
     out += [f'const uint64_t rt_application_id = {title_id:#x}ull;',
             f'const int rt_game_version = {number};',
+        f'const char rt_display_version[] = {c_string(DKB_DISPLAY.get(version, "1.0.0"))};',
             f'const char rt_port_version[] = {c_string(port_version())};', '']
     return '\n'.join(out)
 

@@ -1,5 +1,5 @@
 """installer/ bookkeeping with fake steps: fresh install, resume after a failure or cancel, transient steps, update
-with a newer release, totk.ini and the event stream. No game files, no tools; stdlib only.
+with a newer release, dkb.ini and the event stream. No game files, no tools; stdlib only.
 
 Run: python tests/installer_test.py
 """

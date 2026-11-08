@@ -104,7 +104,7 @@ CONTROLLER_UI_CHOICES = [
 ]
 
 def install_controller_ui(choice_id: str, target_game_dir: str) -> bool:
-    ini_path = os.path.join(target_game_dir, "totk.ini")
+    ini_path = os.path.join(target_game_dir, "totk.ini" if os.path.exists(os.path.join(target_game_dir, "totk.ini")) and not os.path.exists(os.path.join(target_game_dir, "dkb.ini")) else "dkb.ini")
     if not os.path.isfile(ini_path):
         ini_path = os.path.join(target_game_dir, "dkb.ini")
     layout_val = "playstation" if "ps5" in choice_id else "xbox" if "xbox" in choice_id else "nintendo"
@@ -577,7 +577,7 @@ class ModernDkbInstaller(ctk.CTk):
         if os.path.abspath(payload_dir) != os.path.abspath(target):
             self.log("[*] Deploying Donkey Kong Bananza recompiled binaries...")
             essential_files = [
-                "dkb.exe", "DKBLauncher.exe", "totk.ini", "romfs-index.bin", "dkb.ico",
+                "dkb.exe", "DKBLauncher.exe", "dkb.ini", "totk.ini", "romfs-index.bin", "dkb.ico",
                 "pipeline-cache.bin", "pipeline-keys.bin", "shader-answers.bin", "shader-programs.bin",
                 "SDL3.dll", "libopus-0.dll", "libiconv-2.dll", "libxess.dll", "libxess_dx11.dll", "libxess_fg.dll",
                 "nvngx_dlss.dll", "nvngx_dlssg.dll", "nvngx_dlssnr.dll",
