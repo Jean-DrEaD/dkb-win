@@ -9,7 +9,7 @@ namespace DkbBuilder;
 
 sealed class Tools
 {
-    public const string Tag = "v0.3.4";
+    public const string Tag = "v0.3.5";
     public string Version => Tag;
     public string Root = "";
     public string Dir => Path.Combine(Root, "tools");
@@ -159,9 +159,25 @@ sealed class Runner
         {
             L("@@stage read");
             await Ferramentas.Prepare(t, L, cts.Token);
-            var exefs = Get("--exefs"); var romfs = Get("--romfs");
             var dest = Get("--out") ?? Get("--update") ?? Path.Combine(t.Root, "jogo");
-            if (exefs == null || romfs == null) { Finished?.Invoke("Escolha as pastas exefs e romfs (arquivo .nup ainda nao suportado)."); return; }
+                var exefs = Get("--exefs"); var romfs = Get("--romfs"); var nup = Get("--nup");
+                if ((exefs == null || romfs == null) && nup != null)
+                {
+                    var sc = Path.Combine(t.Src, "tools", "extract_nup.py");
+                    var ext = Path.Combine(dest, "_nup");
+                    L("== Extraindo o .nup (base + update) ==");
+                    if (await Ferramentas.Run(t.Python, new[] { sc, nup, "--out", ext, "--overlay-update" }, t.Src, t, L, cts.Token, p => proc = p) != 0)
+                    { Finished?.Invoke("Nao foi possivel extrair o .nup. Clique em 'Show details'."); return; }
+                    exefs = Path.Combine(ext, "exefs"); romfs = Path.Combine(ext, "romfs");
+                    var idx = await Nup.AddonIndex(t, nup);
+                    if (idx != null)
+                    {
+                        L("== Extraindo a DLC ==");
+                        if (await Ferramentas.Run(t.Python, new[] { sc, nup, "--package", idx, "--only", "romfs", "--out", Path.Combine(dest, "dlc") }, t.Src, t, L, cts.Token, p => proc = p) != 0)
+                            L("[AVISO] DLC nao extraida; o jogo segue sem ela.");
+                    }
+                }
+                if (exefs == null || romfs == null) { Finished?.Invoke("Escolha um .nup ou as pastas exefs e romfs."); return; }
             L("@@stage lift");
             var args = new[] { "-m", "installer", "--exefs", exefs, "--romfs", romfs, "--dest", dest,
                 "--toolchain", t.Clang, "--deps", t.Clang, "--ninja", Path.Combine(t.Clang, "bin", "ninja.exe"),
@@ -182,6 +198,34 @@ sealed class Runner
         catch (Exception e) { Finished?.Invoke(e.Message); }
     }
 
-    public static Task<(bool Ok, string Text)> Check(Tools t, string[] a) =>
-        Task.FromResult((false, "Arquivo .nup ainda nao suportado: use 'pastas exefs/romfs'."));
+    public static async Task<(bool Ok, string Text)> Check(Tools t, string[] a)
+    {
+        var i = Array.IndexOf(a, "--nup"); if (i < 0 || i + 1 >= a.Length) return (false, "Nenhum .nup.");
+        var sc = Path.Combine(t.Src, "tools", "extract_nup.py");
+        if (!File.Exists(t.Python) || !File.Exists(sc)) return (true, "Sera conferido no build (ferramentas ainda nao baixadas).");
+        var lines = new List<string>();
+        int code;
+        try { code = await Ferramentas.Run(t.Python, new[] { sc, a[i + 1], "--list" }, t.Src, t, x => { lock (lines) lines.Add(x); }, CancellationToken.None); }
+        catch (Exception e) { return (false, e.Message); }
+        var all = string.Join("\n", lines);
+        if (code != 0) return (false, lines.LastOrDefault() ?? "O .nup nao pode ser lido.");
+        if (all.IndexOf("74a01bf1", StringComparison.OrdinalIgnoreCase) < 0 && all.IndexOf("bananza", StringComparison.OrdinalIgnoreCase) < 0)
+            return (false, "This is build of another game (nao e o Donkey Kong Bananza).");
+        var upd = all.IndexOf("update", StringComparison.OrdinalIgnoreCase) >= 0 ? " + update" : "";
+        var dlc = all.IndexOf("addon", StringComparison.OrdinalIgnoreCase) >= 0 ? " + DLC" : "";
+        return (true, "Donkey Kong Bananza: base" + upd + dlc);
+    }
+}
+
+static class Nup
+{
+    public static async Task<string?> AddonIndex(Tools t, string nup)
+    {
+        var lines = new List<string>();
+        await Ferramentas.Run(t.Python, new[] { Path.Combine(t.Src, "tools", "extract_nup.py"), nup, "--list" }, t.Src, t, x => { lock (lines) lines.Add(x); }, CancellationToken.None);
+        foreach (var l in lines)
+            if (l.Contains("addon", StringComparison.OrdinalIgnoreCase))
+            { var m = System.Text.RegularExpressions.Regex.Match(l, @"\d+"); if (m.Success) return m.Value; }
+        return null;
+    }
 }
