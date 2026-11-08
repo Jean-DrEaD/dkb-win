@@ -73,13 +73,13 @@ static class Finder
 
     // ---- shortcuts to the built game ----
 
-    static string DesktopLink => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "oot-win.lnk");
-    static string StartLink => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "oot-win.lnk");
+    static string DesktopLink => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Donkey Kong Bananza.lnk");
+    static string StartLink => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "Donkey Kong Bananza.lnk");
 
     /// Made or removed as the two ticks say (Windows' own shell object writes the .lnk)
     public static void Shortcuts(string gameFolder, bool desktop, bool start)
     {
-        var exe = Path.Combine(gameFolder, "oot-win.exe");
+        var exe = Path.Combine(gameFolder, "dkb.exe");
         foreach (var (link, want) in new[] { (DesktopLink, desktop), (StartLink, start) })
         {
             try
@@ -96,10 +96,11 @@ static class Finder
                 s.TargetPath = exe;
                 s.WorkingDirectory = gameFolder;
                 s.IconLocation = exe + ",0";
-                s.Description = "The Legend of Zelda: Ocarina of Time, built by oot-win";
+                s.Description = "Donkey Kong Bananza (DKB)";
                 s.Save();
             }
             catch (Exception) { }
         }
     }
 }
+
