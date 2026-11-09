@@ -33,12 +33,20 @@ static class Ferramentas
     public static bool Ready(Tools t) { var f = Path.Combine(t.Dir, ".ready"); return File.Exists(f) && File.ReadAllText(f).Trim() == Tools.Tag; }
     static HttpClient MakeHttp() { var h = new HttpClient { Timeout = Timeout.InfiniteTimeSpan }; h.DefaultRequestHeaders.UserAgent.ParseAdd("DkbBuilder"); return h; }
 
+    static readonly SemaphoreSlim Gate = new(1, 1);
     public static async Task Prepare(Tools t, Action<string> log, CancellationToken ct)
+    {
+        await Gate.WaitAsync(ct);
+        try { if (Ready(t)) return; await PrepareCore(t, log, ct); }
+        finally { Gate.Release(); }
+    }
+    static async Task PrepareCore(Tools t, Action<string> log, CancellationToken ct)
     {
         Directory.CreateDirectory(t.Dir);
         var tmp = Path.Combine(t.Dir, "_downloads"); Directory.CreateDirectory(tmp);
 
-        if (!File.Exists(t.Src + "\\.ok") || File.ReadAllText(t.Src + "\\.ok").Trim() != Tools.Tag)
+        var srcOk = File.Exists(t.Src + "\\.ok") ? File.ReadAllText(t.Src + "\\.ok").Trim() : "";
+        if (srcOk != Tools.Tag && srcOk != "main")
         {
             log("== Codigo-fonte " + Tools.Tag + " ==");
             string url; var got = Tools.Tag;
@@ -75,7 +83,7 @@ static class Ferramentas
                 if (File.Exists(f) && await Run(t.Python, new[] { "-m", "pip", "install", "-q", "-r", f }, t.Src, t, log, ct) != 0) throw new Exception("pip falhou em " + r);
             }
             if (await Run(t.Python, new[] { "-m", "pip", "install", "-q", "zstandard" }, t.Src, t, log, ct) != 0) throw new Exception("pip falhou em zstandard");
-            File.WriteAllText(pyDir + "\\.pip-ok", "");
+            Directory.CreateDirectory(pyDir); File.WriteAllText(pyDir + "\\.pip-ok", "");
         }
 
         var bash = Path.Combine(t.Msys, "usr", "bin", "bash.exe");
