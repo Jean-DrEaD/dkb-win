@@ -10,8 +10,11 @@
 // correctly rounded (build x86 with -mfma).
 #pragma once
 #include <fenv.h>
-#include <immintrin.h>
 #include <math.h>
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 #include "cpu.h"
 
@@ -211,6 +214,15 @@ SI int simd_fe_mode(uint64_t fpcr) {
     return m[(fpcr >> 22) & 3];
 }
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+// On AArch64 the host FPCR is the guest FPCR (cpu.h rt_fpcr_sync makes the host FPCR the guest's), so host FP already
+// rounds, flushes and saturates the way the instruction it lowers does: there is nothing to switch around one operation
+// and no directed rounding to take a slow path for. simd_rm_* stay as no-ops so the shared lowering compiles unchanged.
+SI unsigned simd_rm_enter(uint64_t fpcr) { (void)fpcr; return 0; }
+SI void simd_rm_rz(void) {}
+SI void simd_rm_leave(unsigned old) { (void)old; }
+SI int simd_directed(const Cpu *c) { (void)c; return 0; }
+#else
 // MXCSR rounding control (bits 13-14) without fesetround's x87 + SSE double write; ldmxcsr only on change.
 #define SIMD_RC_MASK 0x6000u
 SI unsigned simd_rm_set_rc(unsigned cur, unsigned rc) {
@@ -233,6 +245,7 @@ SI void simd_rm_leave(unsigned old) {
 // The thread's MXCSR mirrors the guest FPCR.FZ with RC = nearest whenever guest code runs (cpu.h rt_fpcr_sync), so
 // plain host FP gives the ARM result unless FPCR.RMode asks for directed rounding, which the slow paths handle.
 SI int simd_directed(const Cpu *c) { return __builtin_expect((c->fpcr & FPCR_RM) != 0, 0); }
+#endif
 
 #define F s
 #define T float
@@ -598,21 +611,6 @@ SI void sl_pmull64(Cpu *c, int part, int d, int n, int m) {
     uint64_t hi, lo = pmul64(((sa64 *)&c->v[n])[part], ((sa64 *)&c->v[m])[part], &hi);
     c->v[d] = ((u128)hi << 64) | lo;
 }
-// SDOT/UDOT (ARMv8.2 DotProd, 8-bit -> 32-bit lanes)
-SI void sv_dot(Cpu *c, int Q, int u, int d, int n, int m) {
-    u128 a = c->v[n], b = c->v[m], r = c->v[d];
-    int ne = 2 << Q;
-    for (int i = 0; i < ne; i++) {
-        uint32_t acc = (uint32_t)lget(&r, 2, i);
-        for (int k = 0; k < 4; k++) {
-            uint64_t x = lget(&a, 0, 4 * i + k), y = lget(&b, 0, 4 * i + k);
-            acc += u ? (uint32_t)(x * y) : (uint32_t)((int32_t)(int8_t)x * (int32_t)(int8_t)y);
-        }
-        lset(&r, 2, i, acc);
-    }
-    if (!Q) r = (uint64_t)r;
-    c->v[d] = r;
-}
 
 // ---- FP vector helpers: lanes of the 64-bit form are computed on a zero upper half
 SI vf32 vsplat_s(vf32 v, int i, int Q) { float x = v[i]; return Q ? (vf32){x, x, x, x} : (vf32){x, x, 0, 0}; }
@@ -658,10 +656,6 @@ SI vf32 vrecpe_s(Cpu *c, vf32 v) { for (int i = 0; i < 4; i++) v[i] = recpe_s(c,
 SI vf64 vrecpe_d(Cpu *c, vf64 v) { for (int i = 0; i < 2; i++) v[i] = recpe_d(c, v[i]); return v; }
 SI vf32 vrsqrte_s(Cpu *c, vf32 v) { for (int i = 0; i < 4; i++) v[i] = rsqrte_s(c, v[i]); return v; }
 SI vf64 vrsqrte_d(Cpu *c, vf64 v) { for (int i = 0; i < 2; i++) v[i] = rsqrte_d(c, v[i]); return v; }
-SI vu16 vfromint_h_rsqrte(Cpu *c, vu16 v) {
-    for (int i = 0; i < 8; i++) v[i] = simd_s2h(c, rsqrte_s(c, simd_h2s(c, v[i])));
-    return v;
-}
 
 // FCVTL/FCVTL2 (h->s, s->d), FCVTN/FCVTN2 (s->h, d->s), FCVTXN/FCVTXN2
 SI void sv_fcvtl(Cpu *c, int sz, int part, int d, int n) {

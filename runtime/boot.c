@@ -20,7 +20,7 @@
 #include "nvn_api.h"
 #include "platform/platform.h"
 #include "vk.h"
-
+#include "platform/platform.h"
 
 #define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_S2_"
 // main: return addresses of nnMain's SetFocusHandlingMode call (1.1.1 and 1.2.1 from this port's analysis of main;
@@ -321,6 +321,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
     vk_pipeline_save();   // no-op without the Vulkan back end
     prof_write();
     fflush(stderr);
+    gfx_exit_release();
     plat_exit(0);
 }
 
@@ -349,13 +350,15 @@ static void prewarm_main(void *arg) {
     return;
 }
 
-void rt_boot(void) {
+static void boot_main(void *arg) {
+    (void)arg;
     check_npdm();
     if (!rt_config()->shot) vk_pipeline_async_enable();   // a --shot image must not depend on build timing
     // Shaders and pipelines recorded in earlier runs are made ready while the modules load; the guest waits for them.
     PlatThread *warm = plat_thread_new(prewarm_main, NULL, "prewarm");
     ldr_load(rt_config()->exefs);
     rt_patches_init();
+    dkb_camera_init();
     frame_step_init();
     res_init();
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
@@ -371,4 +374,16 @@ void rt_boot(void) {
     rt_guest_start_ns = kern_now_ns();
     kern_run_on_guest_main(guest_main);
     rt_fatal("boot: the guest main thread ended");
+}
+
+void rt_boot(void) {
+#ifdef __APPLE__
+    // macOS runs AppKit, and with it SDL's video and window events, on the process's main thread only: the guest boot
+    // moves to a thread of its own and the caller runs the window's event loop until the guest ends the process.
+    if (!plat_thread_spawn(boot_main, NULL, "game", 0)) rt_fatal("boot: cannot start the game thread");
+    gfx_window_main_thread();
+    return;   // not reached: the main thread only leaves with the process
+#else
+    boot_main(NULL);
+#endif
 }

@@ -119,29 +119,16 @@ static void ov_hdr_paper_white(Cpu *c) {
     if (nits) *nits = 203;
     ret_x(c, 0);
 }
-// Result QueryDisplayVrrSupported(bool *out, const Display *): no, except with the experiment's dynamic frame rate
-// (patches-dkb100.txt, set dynfps): told VRR works, the game times its own frames (Eglantine-ZendNevs nso.cpp).
+// Result QueryDisplayVrrSupported(bool *out, const Display *): no
 static void ov_vrr_supported(Cpu *c) {
     uint8_t *out = arg_p(c, 0);
-    if (out) *out = (uint8_t)rt_patch_enabled(rt_patch_set("dynfps"));
+    if (out) *out = 0;
     ret_x(c, 0);
 }
 // Result SetDisplayVrrCapability(Display *, bool), Set/ClearLayerExtendedSwapInterval(Layer *[, int, int]),
 // SetLayerNextHdr{Extended,Standard}ContentLuminanceRangeMetadata(Layer *, u16, u16): accepted, nothing changes
 static void ov_vi_accept(Cpu *c) { ret_x(c, 0); }
-// Result QueryDisplayCurrentRefreshRate(RefreshRate *out, bool *is_vrr, const Display *): 60 Hz fixed
-static void ov_refresh_rate(Cpu *c) {
-    float *rate = arg_p(c, 0);
-    uint8_t *vrr = arg_p(c, 1);
-    if (rate) *rate = 60.0f;
-    if (vrr) *vrr = 0;
-    ret_x(c, 0);
-}
 
-HOST_OVERRIDE("_ZN2nn2vi30QueryDisplayCurrentRefreshRateEPNS0_11RefreshRateEPbPKNS0_7DisplayE", ov_refresh_rate);
-HOST_OVERRIDE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", ov_vi_accept);
-HOST_OVERRIDE("_ZN2nn2vi36SetDisplay120HzRefreshRateCapabilityEPNS0_7DisplayEb", ov_vi_accept);
-HOST_OVERRIDE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE", ov_hdr_status);
 HOST_OVERRIDE("_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE", ov_hdr_paper_white);
 HOST_OVERRIDE("_ZN2nn2vi24QueryDisplayVrrSupportedEPbPKNS0_7DisplayE", ov_vrr_supported);
@@ -150,6 +137,8 @@ HOST_OVERRIDE("_ZN2nn2vi28SetLayerExtendedSwapIntervalEPNS0_5LayerEii", ov_vi_ac
 HOST_OVERRIDE("_ZN2nn2vi30ClearLayerExtendedSwapIntervalEPNS0_5LayerE", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", ov_vi_accept);
 
 // void *nvnBootstrapLoader(const char *name): the first NVN call
 static void ov_nvn_bootstrap(Cpu *c) {

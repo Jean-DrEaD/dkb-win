@@ -19,15 +19,15 @@
 #include <string.h>
 #include <time.h>
 
+#include "aoc_romfs.h"
 #include "cfg.h"
-#include "fs.h"
 #include "host.h"
 #include "ov.h"
 #include "platform/platform.h"
-const char *dkb_aoc_dir(void);   // fs_host.c
 
 #define NFP_R_DEVICE_NOT_FOUND 0x8073u     // nfp: no NFC reader on the host
 #define ACCOUNT_R_INVALID 0x7c67u          // MacNativeGames' result for an unknown user handle or uid
+#define ACCOUNT_R_REGISTRATION_REQUIRED 0x1907cu
 #define TIME_R_INVALID 0x74u
 #define TIME_R_SOURCE_MISMATCH 0x18074u
 
@@ -73,6 +73,9 @@ static const char *switch_language(const char *tag) {
         }
         p += k;
     }
+    // Bananza ships Portuguese only as Mals/USpt (the Americas), with no EUpt for plain "pt", so every Portuguese
+    // locale, Portugal's included, asks for pt-BR; "pt" alone would fall back to English.
+    if (!strcmp(lang, "pt") && !rt_game_version) return "pt-BR";
     if (!strcmp(lang, "ja") || !strcmp(lang, "de") || !strcmp(lang, "it") || !strcmp(lang, "nl") ||
         !strcmp(lang, "ru") || !strcmp(lang, "ko") || !strcmp(lang, "pt"))
         return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
@@ -120,6 +123,50 @@ static void ov_desired_language(Cpu *c) {
 }
 
 static void ov_oe_initialize(Cpu *c) { (void)c; rt_log("oe: application environment: a local host process"); }
+
+static void ov_nifm_initialize(Cpu *c) {
+    (void)c;
+    rt_log("nifm: offline host; network requests are unavailable");
+}
+
+static void ov_nifm_submit(Cpu *c) {
+    (void)c;
+    rt_log("nifm: network request refused (offline host)");
+}
+
+static void ov_nifm_unavailable(Cpu *c) {
+    // No request is accepted and no system network applet can resolve an error on this host.
+    ret_x(c, 0);
+}
+
+static void ov_bcat_initialize(Cpu *c) {
+    (void)c;
+    rt_log("bcat: offline host; no delivery cache is installed");
+}
+
+static void ov_streamplay_memory(Cpu *c) {
+    // No GameShare session or streaming buffers exist on the offline host.
+    rt_log("streamplay: GameShare unavailable; no streaming work memory required");
+    ret_x(c, 0);
+}
+
+static void ov_bcat_mount(Cpu *c) {
+    // BCAT's FailedOpenEntity (module 122, description 2), not a successful mount of nonexistent content.
+    ret_x(c, 0x47a);
+}
+
+static void ov_display_version(Cpu *c) {
+    // The validated loose dump has no control metadata; do not invent a release version from its title version.
+    char *out = arg_p(c, 0);
+    memset(out, 0, 16);
+    // Base 1.0.0 has a validated release name (expected-dkb100.json display_version); the update's is unverified.
+    if (!strcmp(rt_game_target, "dkb100") && strlen(rt_game_display) < 16) {
+        memcpy(out, rt_game_display, strlen(rt_game_display));
+        return;
+    }
+    memcpy(out, "unknown", sizeof "unknown");
+    rt_log("oe: display version unavailable (no control metadata)");
+}
 
 // void SetPerformanceConfiguration(PerformanceMode mode, int config)
 static void ov_performance_config(Cpu *c) {
@@ -298,31 +345,21 @@ static void ov_show_error(Cpu *c) {
 
 // ==== SDK-internal initialisation (services.c)
 static void ov_diag_startup(Cpu *c) { (void)c; rt_log("diag: host diagnostics"); }
-static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: no add-on content"); }
-// 1.4.3's main lists add-on content (MNG services.c host_aoc_list): there is none.
-// int ListAddOnContent(AddOnContentIndex *out, int offset, int count)
+static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: %u add-on content(s)", aoc_count()); }
+static void ov_aoc_count(Cpu *c) { ret_x(c, aoc_count()); }
+// int ListAddOnContent(int *out, int offset, int count): the add-on content indices this machine has, paged. The
+// argument layout and the count in the return value are the mangled signature's (EPiii); the buffer is checked to be
+// mapped (the host can only probe readability) before a single entry lands in it, because a wrong layout here would corrupt guest memory silently.
 static void ov_aoc_list(Cpu *c) {
-    int offset = (int)arg_x(c, 1), count = (int)arg_x(c, 2);
-    if (offset < 0 || count < 0) rt_fatal("aoc: ListAddOnContent range %d+%d", offset, count);
     int32_t *out = arg_p(c, 0);
-    const char *dir = dkb_aoc_dir();
-    int n = (dir && *dir && offset == 0 && count > 0 && out) ? 1 : 0;
-    if (n) out[0] = 1;
-    rt_log("aoc: ListAddOnContent %d+%d -> %d", offset, count, n);
+    int offset = (int32_t)arg_x(c, 1), count = (int32_t)arg_x(c, 2);
+    if (offset < 0 || count < 0) rt_fatal("aoc: ListAddOnContent range %d+%d", offset, count);
+    uint32_t ids[AOC_MAX];
+    uint32_t n = aoc_list(ids, offset, count < AOC_MAX ? count : AOC_MAX);
+    if (n && !(out && plat_mem_readable((uintptr_t)out, n * sizeof *out))) n = 0;   // nothing written, nothing reported
+    for (uint32_t i = 0; i < n; i++) out[i] = (int32_t)ids[i];
     ret_x(c, n);
 }
-// int CountAddOnContent(): 3.2.0's main asks how many add-on contents exist: none (DLC not mounted yet)
-static void ov_aoc_count(Cpu *c) {
-    const char *dir = dkb_aoc_dir();
-    int n = (dir && *dir) ? 1 : 0;
-    rt_log("aoc: CountAddOnContent -> %d", n);
-    ret_x(c, n);
-}
-static void ov_aoc_lost(Cpu *c) { rt_log("aoc: ShowAddOnContentLostError"); ret_x(c, 0); }
-
-// BCAT (3.2.0): sem servico -> sem conteudo
-static void ov_bcat_ok(Cpu *c) { ret_x(c, 0); }
-static void ov_bcat_fail(Cpu *c) { ret_x(c, 0x27A) /* bcat: indisponivel */; }
 static void ov_err_context(Cpu *c) { (void)c; rt_log("err: error contexts stay local"); }
 static void ov_pctl_initialize(Cpu *c) { (void)c; rt_log("pctl: no parental controls"); }
 static void ov_abort_observer(Cpu *c) { (void)c; rt_log("diag: the host crash reporter observes aborts"); }
@@ -451,6 +488,14 @@ static void ov_user_id(Cpu *c) {
     if (ok) *out = local;
     plat_mutex_unlock_shared(&account_lock);
     ret_x(c, ok ? 0 : ACCOUNT_R_INVALID);
+}
+
+static void ov_cached_account(Cpu *c) {
+    plat_mutex_lock_shared(&account_lock);
+    int ok = valid_handle(arg_p(c, 1));
+    plat_mutex_unlock_shared(&account_lock);
+    // The local user has no linked Nintendo Account; the SDK leaves both outputs untouched on failure.
+    ret_x(c, ok ? ACCOUNT_R_REGISTRATION_REQUIRED : ACCOUNT_R_INVALID);
 }
 
 // Result GetLastOpenedUser(Uid *out): the local user, the only one the host ever opens (Bananza asks after
@@ -619,39 +664,9 @@ static void ov_current_time(Cpu *c) {
     ret_x(c, 0);
 }
 
-// time_point StandardUserSystemClock / StandardNetworkSystemClock::now(): PosixTime seconds in x0
-static void ov_posix_now(Cpu *c) { ret_x(c, (uint64_t)posix_now()); }
-
 // time_point StandardSteadyClock::now(): the int64 seconds in x0 only. The SDK caller (sdk+0x3d1d88) reads x0;
 // returning the 0x18-byte struct through x8 would write through a stale pointer (time_host.c).
 static void ov_steady_now(Cpu *c) { ret_x(c, (uint64_t)steady_now().value); }
-
-// Result StandardSteadyClock::GetCurrentTimePoint(SteadyClockTimePoint *out)
-static void ov_steady_timepoint(Cpu *c) {
-    SteadyClockTimePoint *out = arg_p(c, 0);
-    if (!out) { ret_x(c, TIME_R_INVALID); return; }
-    *out = steady_now();
-    ret_x(c, 0);
-}
-
-// Result GetStandardSteadyClockCurrentTimespec(timespec *out): called by clock_gettime(CLOCK_MONOTONIC) after nntimeStartup
-static void ov_steady_timespec(Cpu *c) {
-    int64_t *out = arg_p(c, 0);
-    if (!out) { ret_x(c, TIME_R_INVALID); return; }
-    uint64_t ns = kern_now_ns();
-    out[0] = (int64_t)(ns / 1000000000ull);
-    out[1] = (int64_t)(ns % 1000000000ull);
-    ret_x(c, 0);
-}
-
-// Result GetStandard{User,Network}SystemClockCurrentTimespec(timespec *out): called by clock_gettime(CLOCK_REALTIME)
-static void ov_system_timespec(Cpu *c) {
-    int64_t *out = arg_p(c, 0);
-    if (!out) { ret_x(c, TIME_R_INVALID); return; }
-    out[0] = posix_now();
-    out[1] = (int64_t)(kern_now_ns() % 1000000000ull);
-    ret_x(c, 0);
-}
 
 // Result ToCalendarTime(CalendarTime *out, CalendarAdditionalInfo *info, const PosixTime &t): local time
 static void ov_to_calendar(Cpu *c) {
@@ -819,70 +834,6 @@ static void ov_font_size(Cpu *c) {
     ret_x(c, fonts.size[t]);
 }
 
-// int nn::audio::detail::ListVirtualInputDevices(AudioDeviceName *out, int max): no virtual microphone input on host
-static void ov_list_virtual_input(Cpu *c) { ret_x(c, 0); }
-
-// ---- Offline stubs for nifm, socket, ssl, nsd, ro, prepo::Send, account NSA
-static void ov_noop(Cpu *c) { (void)c; }
-static void ov_ret_zero(Cpu *c) { ret_x(c, 0); }
-static void ov_ret_one(Cpu *c) { ret_x(c, 1); }
-static void ov_nifm_error_result(Cpu *c) { ret_x(c, 0x271000u | (110u & 0x1ffu)); }   // nifm offline result
-static void ov_nifm_proxy(Cpu *c) {
-    void *out = arg_p(c, 0);
-    if (out) memset(out, 0, 0xaa);
-    ret_x(c, 0);
-}
-static void ov_nsd_env(Cpu *c) {
-    char *out = arg_p(c, 0);
-    if (out) { memset(out, 0, 8); memcpy(out, "lp1", 3); }
-    ret_x(c, 0);
-}
-static void ov_nsd_resolve(Cpu *c) {
-    char *out = arg_p(c, 0);
-    const char *in = arg_p(c, 1);
-    if (out && in && out != in) memcpy(out, in, 0x100);
-    ret_x(c, 0);
-}
-static void ov_account_offline(Cpu *c) { ret_x(c, 0x1f4000u | 124u); }   // account network unavailable
-static void ov_report_send(Cpu *c) {
-    int64_t n = plat_inc64(&reports);
-    if (n % 100 == 1) rt_log("prepo: play report kept local (not sent), %lld so far", (long long)n);
-    void *out = (void *)(uintptr_t)c->x[8];
-    if (out) memset(out, 0, 16);
-    ret_x(c, c->x[8]);
-}
-static void ov_async_event(Cpu *c) {
-    uint64_t ev = arg_x(c, 1);
-    if (ev) {   // stack-allocated event: create it fresh each time (the bind table caches by address, stale on reuse)
-        static uint64_t create, getw;
-        if (!create) {
-            create = ldr_symbol("_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb");
-            getw = ldr_symbol("_ZN2nn2os30GetWritableHandleOfSystemEventEPKNS0_15SystemEventTypeE");
-        }
-        rt_call(c, create, 3, ev, (uint64_t)0, (uint64_t)1);
-        kern_event_signal((uint32_t)rt_call(c, getw, 1, ev));
-    }
-    ret_x(c, 0);
-}
-static volatile uint32_t sock_errno;
-static void ov_sock_fail(Cpu *c) { sock_errno = 38; ret_x(c, (uint64_t)(int64_t)-1); }
-static void ov_sock_get_errno(Cpu *c) { ret_x(c, sock_errno); }
-static void ov_sock_set_errno(Cpu *c) { sock_errno = (uint32_t)arg_x(c, 0); }
-static void ov_sock_gai(Cpu *c) { ret_x(c, 8); }   // EAI_NONAME
-static void ov_sock_gai_str(Cpu *c) {
-    static char *msg;
-    if (!msg) { msg = mem_kernel_alloc(16, 16); memcpy(msg, "offline", 8); }
-    ret_x(c, (uint64_t)(uintptr_t)msg);
-}
-static void ov_sock_htonl(Cpu *c) { ret_x(c, __builtin_bswap32((uint32_t)arg_x(c, 0))); }
-static void ov_sock_htons(Cpu *c) { ret_x(c, __builtin_bswap16((uint16_t)arg_x(c, 0))); }
-static void ov_sock_eventfd(Cpu *c) { ret_x(c, 100); }
-static void ov_sock_eventfd_rw(Cpu *c) {
-    uint64_t *out = arg_p(c, 1);
-    if (out) *out = 1;
-    ret_x(c, 0);
-}
-
 // ==== registration
 // ---- Switch 2 oe calls (Donkey Kong Bananza)
 // int nn::oe::GetCurrentGraphicsScale(): an enum 0-2; main+0x4686d4 maps it through a float table {3, 12, 16} and
@@ -895,17 +846,7 @@ static void ov_graphics_scale_notify(Cpu *c) { (void)c; }
 static void ov_album_orientation(Cpu *c) { (void)c; }
 // void nn::oe::{Enter,Leave}ExitRequestHandlingSection(): no exit request ever arrives from a host system applet
 static void ov_exit_section(Cpu *c) { (void)c; }
-// void nn::oe::GetDisplayVersion(DisplayVersion *out): 16-byte null-terminated version string
-extern const char rt_display_version[];   // build_game.py: modules.c
-static void ov_display_version(Cpu *c) {
-    char *out = arg_p(c, 0);
-    if (out) {
-        memset(out, 0, 16);
-        strncpy(out, rt_display_version, 15);
-    }
-}
 
-HOST_OVERRIDE("_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", ov_display_version);
 HOST_OVERRIDE("_ZN2nn2oe23GetCurrentGraphicsScaleEv", ov_graphics_scale);
 HOST_OVERRIDE("_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb", ov_graphics_scale_notify);
 HOST_OVERRIDE("_ZN2nn2oe24SetAlbumImageOrientationENS_5album16ImageOrientationE", ov_album_orientation);
@@ -913,6 +854,7 @@ HOST_OVERRIDE("_ZN2nn2oe31EnterExitRequestHandlingSectionEv", ov_exit_section);
 HOST_OVERRIDE("_ZN2nn2oe31LeaveExitRequestHandlingSectionEv", ov_exit_section);
 
 HOST_OVERRIDE("_ZN2nn2oe10InitializeEv", ov_oe_initialize);
+HOST_OVERRIDE("_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", ov_display_version);
 HOST_OVERRIDE("_ZN2nn2oe18GetDesiredLanguageEv", ov_desired_language);
 HOST_OVERRIDE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", ov_performance_config);
 HOST_OVERRIDE("_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE", ov_cpu_boost);
@@ -937,6 +879,13 @@ HOST_OVERRIDE("_ZN2nn2oe17FinishStartupLogoEv", ov_finish_logo);
 HOST_OVERRIDE("_ZN2nn2oe25TryPopNotificationMessageEPj", ov_try_pop);
 HOST_OVERRIDE("_ZN2nn2oe22PopNotificationMessageEv", ov_pop);
 HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SaveEv", ov_report_save);
+HOST_OVERRIDE("_ZN2nn4nifm10InitializeEv", ov_nifm_initialize);
+HOST_OVERRIDE("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", ov_nifm_submit);
+HOST_OVERRIDE("_ZN2nn4nifm18IsNetworkAvailableEv", ov_nifm_unavailable);
+HOST_OVERRIDE("_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", ov_nifm_unavailable);
+HOST_OVERRIDE("_ZN2nn4bcat10InitializeEv", ov_bcat_initialize);
+HOST_OVERRIDE("_ZN2nn4bcat25MountDeliveryCacheStorageEv", ov_bcat_mount);
+HOST_OVERRIDE("_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi", ov_streamplay_memory);
 HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE", ov_report_save);
 HOST_OVERRIDE("_ZN2nn5prepo28RequestImmediateTransmissionEv", ov_result_ok);
 HOST_OVERRIDE("_ZN2nn5prepo27AddInternetConnectionStatusEPNS0_10PlayReportEPKcS4_S4_", ov_result_ok);
@@ -958,24 +907,8 @@ HOST_OVERRIDE("_ZN2nn3err9ShowErrorENS_6ResultE", ov_show_error);
 
 HOST_OVERRIDE("nndiagStartup", ov_diag_startup);
 HOST_OVERRIDE("_ZN2nn3aoc10InitializeEv", ov_aoc_initialize);
+HOST_OVERRIDE("_ZN2nn3aoc17CountAddOnContentEv", ov_aoc_count);
 HOST_OVERRIDE("_ZN2nn3aoc16ListAddOnContentEPiii", ov_aoc_list);
-    HOST_OVERRIDE("_ZN2nn3aoc17CountAddOnContentEv", ov_aoc_count);
-HOST_OVERRIDE("_ZN2nn3aoc25ShowAddOnContentLostErrorEPKii", ov_aoc_lost);
-    HOST_OVERRIDE("_ZN2nn4bcat10InitializeEv", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn3hid14InitializeJcmsEPvm", ov_bcat_ok); // hid Jcms (3.2.0): sem servico hid
-    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFile5CloseEv", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFileC1Ev", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFileD1Ev", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn4bcat21DeliveryCacheProgress6UpdateEv", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn4bcat21DeliveryCacheProgressC1Ev", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn4bcat21DeliveryCacheProgressD1Ev", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn4bcat27UnmountDeliveryCacheStorageEv", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn4bcat30CancelSyncDeliveryCacheRequestEv", ov_bcat_ok);
-    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFile4OpenEPKc", ov_bcat_fail);
-    HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFile4ReadEPmlPvm", ov_bcat_fail);
-    HOST_OVERRIDE("_ZN2nn4bcat24RequestSyncDeliveryCacheEPNS0_21DeliveryCacheProgressE", ov_bcat_fail);
-    HOST_OVERRIDE("_ZN2nn4bcat24RequestSyncDeliveryCacheEPNS0_21DeliveryCacheProgressEPKc", ov_bcat_fail);
-    HOST_OVERRIDE("_ZN2nn4bcat25MountDeliveryCacheStorageEv", ov_bcat_fail);
 HOST_OVERRIDE("_ZN2nn3err26InitializeContextWriterApiEv", ov_err_context);
 HOST_OVERRIDE("_ZN2nn4pctl10InitializeEv", ov_pctl_initialize);
 HOST_OVERRIDE("_ZN2nn4diag34InitializeApplicationAbortObserverEv", ov_abort_observer);
@@ -991,6 +924,7 @@ HOST_OVERRIDE("_ZN2nn7account10InitializeEv", ov_account_initialize);
 HOST_OVERRIDE("_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE", ov_open_user);
 HOST_OVERRIDE("_ZN2nn7account9CloseUserERKNS0_10UserHandleE", ov_close_user);
 HOST_OVERRIDE("_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE", ov_user_id);
+HOST_OVERRIDE("_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm", ov_cached_account);
 HOST_OVERRIDE("_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE", ov_last_opened_user);
 HOST_OVERRIDE("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", ov_user_existence);
 HOST_OVERRIDE("_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE", ov_nickname);
@@ -1000,14 +934,7 @@ HOST_OVERRIDE("_ZN2nn4time8FinalizeEv", ov_time_finalize);
 HOST_OVERRIDE("_ZN2nn4time13IsInitializedEv", ov_time_ready);
 HOST_OVERRIDE("_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", ov_current_time);
 HOST_OVERRIDE("_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", ov_current_time);
-HOST_OVERRIDE("_ZN2nn4time23StandardUserSystemClock3nowEv", ov_posix_now);
-HOST_OVERRIDE("_ZN2nn4time26StandardNetworkSystemClock3nowEv", ov_posix_now);
 HOST_OVERRIDE("_ZN2nn4time19StandardSteadyClock3nowEv", ov_steady_now);
-HOST_OVERRIDE("_ZN2nn4time19StandardSteadyClock19GetCurrentTimePointEPNS0_20SteadyClockTimePointE", ov_steady_timepoint);
-HOST_OVERRIDE("_ZN2nn4time38GetStandardSteadyClockCurrentTimePointEPNS0_20SteadyClockTimePointE", ov_steady_timepoint);
-HOST_OVERRIDE("_ZN2nn4time37GetStandardSteadyClockCurrentTimespecEP8timespec", ov_steady_timespec);
-HOST_OVERRIDE("_ZN2nn4time41GetStandardUserSystemClockCurrentTimespecEP8timespec", ov_system_timespec);
-HOST_OVERRIDE("_ZN2nn4time44GetStandardNetworkSystemClockCurrentTimespecEP8timespec", ov_system_timespec);
 HOST_OVERRIDE("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeE",
               ov_to_calendar);
 HOST_OVERRIDE("_ZN2nn4time19ToCalendarTimeInUtcERKNS0_9PosixTimeE", ov_to_calendar_utc);
@@ -1021,118 +948,3 @@ HOST_OVERRIDE("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKN
 HOST_OVERRIDE("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", ov_font_state);
 HOST_OVERRIDE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", ov_font_address);
 HOST_OVERRIDE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", ov_font_size);
-
-HOST_OVERRIDE("_ZN2nn5audio6detail23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", ov_list_virtual_input);
-
-HOST_OVERRIDE("_ZN2nn4nifm10InitializeEv", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn4nifm18IsNetworkAvailableEv", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn4nifm20CancelNetworkRequestEv", ov_noop);
-HOST_OVERRIDE("_ZN2nn4nifm22GetCurrentProxySettingEPNS0_12ProxySettingE", ov_nifm_proxy);
-HOST_OVERRIDE("_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", ov_nifm_error_result);
-HOST_OVERRIDE("_ZN2nn6socket10InitializeERKNS0_6ConfigE", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn6socket8FinalizeEv", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn6socket13IsInitializedEv", ov_ret_one);
-HOST_OVERRIDE("_ZN2nn6socket10SetSockOptEiNS0_5LevelENS0_6OptionEPKvj", ov_sock_fail);
-HOST_OVERRIDE("_ZN2nn6socket7EventFdEmNS0_12EventFdFlagsE", ov_sock_eventfd);
-HOST_OVERRIDE("_ZN2nn6socket11EventFdReadEiPm", ov_sock_eventfd_rw);
-HOST_OVERRIDE("_ZN2nn6socket12EventFdWriteEim", ov_ret_zero);
-HOST_OVERRIDE("nnsocketAccept", ov_sock_fail);
-HOST_OVERRIDE("nnsocketBind", ov_sock_fail);
-HOST_OVERRIDE("nnsocketClose", ov_ret_zero);
-HOST_OVERRIDE("nnsocketConnect", ov_sock_fail);
-HOST_OVERRIDE("nnsocketFcntl", ov_ret_zero);
-HOST_OVERRIDE("nnsocketFreeAddrInfo", ov_noop);
-HOST_OVERRIDE("nnsocketGAIStrError", ov_sock_gai_str);
-HOST_OVERRIDE("nnsocketGetAddrInfo", ov_sock_gai);
-HOST_OVERRIDE("nnsocketGetAddrInfoWithOptions", ov_sock_gai);
-HOST_OVERRIDE("nnsocketGetLastErrno", ov_sock_get_errno);
-HOST_OVERRIDE("nnsocketGetPeerName", ov_sock_fail);
-HOST_OVERRIDE("nnsocketGetSockName", ov_sock_fail);
-HOST_OVERRIDE("nnsocketGetSockOpt", ov_sock_fail);
-HOST_OVERRIDE("nnsocketInetHtonl", ov_sock_htonl);
-HOST_OVERRIDE("nnsocketInetHtons", ov_sock_htons);
-HOST_OVERRIDE("nnsocketInetNtohl", ov_sock_htonl);
-HOST_OVERRIDE("nnsocketInetNtohs", ov_sock_htons);
-HOST_OVERRIDE("nnsocketListen", ov_sock_fail);
-HOST_OVERRIDE("nnsocketPoll", ov_ret_zero);
-HOST_OVERRIDE("nnsocketRecv", ov_sock_fail);
-HOST_OVERRIDE("nnsocketRecvMsg", ov_sock_fail);
-HOST_OVERRIDE("nnsocketResolverGetOption", ov_ret_zero);
-HOST_OVERRIDE("nnsocketResolverSetOption", ov_ret_zero);
-HOST_OVERRIDE("nnsocketSend", ov_sock_fail);
-HOST_OVERRIDE("nnsocketSendMsg", ov_sock_fail);
-HOST_OVERRIDE("nnsocketSetLastErrno", ov_sock_set_errno);
-HOST_OVERRIDE("nnsocketSetSockOpt", ov_ret_zero);
-HOST_OVERRIDE("nnsocketShutdown", ov_ret_zero);
-HOST_OVERRIDE("nnsocketSocket", ov_sock_fail);
-HOST_OVERRIDE("nnsslInitialize", ov_ret_zero);
-HOST_OVERRIDE("nnsslFinalize", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionCreate", ov_sock_fail);
-HOST_OVERRIDE("nnsslConnectionDestroy", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionDoHandshakeWithCertBuffer", ov_sock_fail);
-HOST_OVERRIDE("nnsslConnectionGetConnectionId", ov_sock_fail);
-HOST_OVERRIDE("nnsslConnectionGetNextAlpnProto", ov_sock_fail);
-HOST_OVERRIDE("nnsslConnectionGetServerCertDetail", ov_sock_fail);
-HOST_OVERRIDE("nnsslConnectionGetVerifyCertError", ov_sock_fail);
-HOST_OVERRIDE("nnsslConnectionPeek", ov_sock_fail);
-HOST_OVERRIDE("nnsslConnectionPending", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionRead", ov_sock_fail);
-HOST_OVERRIDE("nnsslConnectionSetHostName", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionSetIoMode", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionSetNextAlpnProto", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionSetOption", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionSetServerCertBuffer", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionSetSessionCacheMode", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionSetSocketDescriptor", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionSetVerifyOption", ov_ret_zero);
-HOST_OVERRIDE("nnsslConnectionWrite", ov_sock_fail);
-HOST_OVERRIDE("nnsslContextDestroy", ov_ret_zero);
-HOST_OVERRIDE("nnsslContextGetContextId", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn3ssl10InitializeEv", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn3ssl8FinalizeEv", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE", ov_nsd_env);
-HOST_OVERRIDE("_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", ov_nsd_resolve);
-HOST_OVERRIDE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", ov_noop);
-HOST_OVERRIDE("_ZN2nn2pl17RequestLoadNxFontEPvm", ov_noop);
-HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", ov_report_send);
-HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext18GetCompletionEventEPNS_2os11SystemEventE", ov_async_event);
-HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext9GetResultEv", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn5prepo12AsyncContextD1Ev", ov_noop);
-HOST_OVERRIDE("_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE", ov_account_offline);
-HOST_OVERRIDE("_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE", ov_account_offline);
-HOST_OVERRIDE("_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm", ov_account_offline);
-HOST_OVERRIDE("_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE", ov_account_offline);
-HOST_OVERRIDE("_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE", ov_account_offline);
-HOST_OVERRIDE("_ZN2nn7account12AsyncContext14GetSystemEventEPNS_2os11SystemEventE", ov_async_event);
-HOST_OVERRIDE("_ZN2nn7account12AsyncContext9GetResultEv", ov_account_offline);
-
-// nn::streamplay (3.2.0): no streaming on the host -> init ok, 0 sizes, 0 guests, disconnected.
-static void ov_stpl_zero(Cpu *c) { ret_x(c, 0); }
-static void ov_stpl_conn(Cpu *c) { uint32_t *o = arg_p(c, 0); if (o) *o = 0; ret_x(c, 0); }
-HOST_OVERRIDE("_ZN2nn10streamplay10InitializeENS0_14StreamPlayTypeENS0_13StreamingModeEPvm", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay12CloseSessionEv", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay14StartStreamingEv", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadFullKeyStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadJoyDualStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadJoyLeftStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid17NpadHandheldStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid17NpadJoyRightStateEEEiRKNS0_10GuestPadIdE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay18GetConnectionStateEPNS0_15ConnectionStateE", ov_stpl_conn);
-HOST_OVERRIDE("_ZN2nn10streamplay18GetGuestJcmsHandleERKNS0_10GuestPadIdERKNS_3hid8JcmsTypeE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay18GetGuestJcmsStatesEPNS0_14GuestJcmsStateEiRKNS0_15GuestJcmsHandleE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay19GetGuestPadStyleSetERKNS0_10GuestPadIdE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay20GuestVibrationTarget29SetGuestVibrationDeviceHandleERKNS0_26GuestVibrationDeviceHandleE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay20GuestVibrationTarget31UnsetGuestVibrationDeviceHandleEv", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay20GuestVibrationTargetC1Ev", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay23GetGuestNpadJoyHoldTypeEv", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay23SetGuestNpadJoyHoldTypeENS_3hid15NpadJoyHoldTypeE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay25SetSupportedHidFeatureSetENS_4util10BitFlagSetILi32ENS0_13HidFeatureTagEEE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay27GetGuestSixAxisSensorStatesEPNS0_23GuestSixAxisSensorStateEiRKNS0_24GuestSixAxisSensorHandleE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay27GetGuestVibrationDeviceInfoEPNS_3hid19VibrationDeviceInfoERKNS0_26GuestVibrationDeviceHandleE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay28GetGuestSixAxisSensorHandlesEPNS0_24GuestSixAxisSensorHandleEiRKNS0_10GuestPadIdENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay29SetSupportedGuestNpadStyleSetENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay30GetConnectionStateChangedEventEv", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay30GetGuestVibrationDeviceHandlesEPNS0_26GuestVibrationDeviceHandleEiRKNS0_10GuestPadIdENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay31OpenSessionWithMatchmakeSupportEPNS0_11SessionInfoERKNS0_15MatchmakeConfigE", ov_stpl_zero);
-HOST_OVERRIDE("_ZN2nn10streamplay8FinalizeEv", ov_stpl_zero);

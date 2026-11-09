@@ -117,9 +117,7 @@ static size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, si
     return (size_t)(d - dst);
 }
 
-typedef struct { uint32_t file_off, mem_off, size, csize; int compressed, zbic; } Seg;
-size_t rt_zbic_decompress(void *dst, size_t dstCap, const void *src, size_t srcSize);
-
+typedef struct { uint32_t file_off, mem_off, size, csize; int compressed; } Seg;
 
 static uint64_t nso_segments(const uint8_t *raw, size_t len, const char *name, Seg seg[3]) {
     if (len < 0x100 || memcmp(raw, "NSO0", 4)) rt_fatal("loader: %s is not an NSO", name);
@@ -128,7 +126,6 @@ static uint64_t nso_segments(const uint8_t *raw, size_t len, const char *name, S
         memcpy(&seg[i], raw + 0x10 + i * 0x10, 12);
         seg[i].csize = *(const uint32_t *)(raw + 0x60 + i * 4);
         seg[i].compressed = (flags >> i) & 1;
-        seg[i].zbic = (flags & 0x80) != 0;
         if ((uint64_t)seg[i].file_off + (seg[i].compressed ? seg[i].csize : seg[i].size) > len)
             rt_fatal("loader: %s segment %d lies outside the file", name, i);
     }
@@ -139,9 +136,6 @@ static uint64_t nso_segments(const uint8_t *raw, size_t len, const char *name, S
 static void nso_segment(const uint8_t *raw, const Seg *s, uint8_t *dst, const char *name, int i) {
     if (!s->compressed) {
         memcpy(dst, raw + s->file_off, s->size);
-    } else if (s->zbic) {
-        if (rt_zbic_decompress(dst, s->size, raw + s->file_off, s->csize) != s->size)
-            rt_fatal("loader: %s segment %d: ZBIC data is corrupt", name, i);
     } else if (lz4_decompress(raw + s->file_off, s->csize, dst, s->size) != s->size) {
         rt_fatal("loader: %s segment %d: LZ4 data is corrupt", name, i);
     }

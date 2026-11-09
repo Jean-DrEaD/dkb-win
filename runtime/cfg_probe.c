@@ -15,7 +15,23 @@ static int fails;
 #define CHECK(c, what) do { if (!(c)) { fails++; fprintf(stderr, "FAIL cfg: %s\n", what); } } while (0)
 #define EQ(a, b) ((a) && !strcmp((a), (b)))
 
+// DKB_PROBE_CFG_INI=<file>: load that ini and print "key = value" for every settings row (tests/cfg_settings_test.py).
+// A range row prints cfg_double, so a value that does not parse shows the default it falls back to.
+static int dump_cfg(const char *ini) {
+    cfg_load(ini);
+    for (int i = 0; cfg_meta_at(i); i++) {
+        const CfgMeta *m = cfg_meta_at(i);
+        char name[96];
+        snprintf(name, sizeof name, "TOTK_%s", m->key);
+        if (m->values && strstr(m->values, "..")) printf("%s = %.10g\n", m->key, cfg_double(name));
+        else printf("%s = %s\n", m->key, cfg_get(name) ? cfg_get(name) : cfg_value(name));
+    }
+    return 0;
+}
+
 int probe_cfg(void) {
+    const char *dump = getenv("DKB_PROBE_CFG_INI");
+    if (dump && *dump) return dump_cfg(dump);
     char path[1024];
     if (!plat_exe_path(path, sizeof path)) return 1;
     char *cut = plat_last_sep(path);
@@ -363,6 +379,10 @@ int probe_cfg(void) {
     plat_setenv("TOTK_MOUSE_SENS", NULL);
     plat_setenv("TOTK_FREE_CORES", NULL);
     CHECK(cfg_bool("TOTK_FPS60") == 1, "default: unset FPS60 is on");
+    plat_setenv("TOTK_OUTPUT_RES", NULL);
+    plat_setenv("DKB_OUTPUT_RES", NULL);
+    CHECK(EQ(cfg_value("TOTK_OUTPUT_RES"), rt_game_version ? "1920x1080" : "2880x1620"),
+          "default: preserve the game's stock output resolution");
     CHECK(EQ(cfg_value("TOTK_VK_PRESENT"), "mailbox") && cfg_int("TOTK_SPLIT_DRAWS") == 64, "default: text and integer");
     plat_setenv("TOTK_MOUSE_SENS", "2.5");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 2.5, "double: the environment value");
@@ -379,6 +399,17 @@ int probe_cfg(void) {
     plat_setenv("TOTK_FREE_CORES", NULL);
     cfg_load("cfg-probe-missing.ini");
     int listed = 0;
+    plat_setenv("TOTK_REALTIME", NULL);
+    plat_setenv("DKB_REALTIME", NULL);
+    CHECK(cfg_bool("TOTK_REALTIME") == (rt_game_version != 0), "real-time default: Bananza off, TotK on");
+    CHECK(!cfg_meta("REALTIME")->live, "real-time opt-in needs a restart");
+    cfg_set("TOTK_REALTIME", "1");
+    CHECK(cfg_bool("TOTK_REALTIME"), "explicit real-time opt-in overrides the default");
+    cfg_set("TOTK_REALTIME", "0");
+    CHECK(!cfg_bool("TOTK_REALTIME"), "explicit real-time opt-out overrides the default");
+    static const char *const realtime_key[] = {"REALTIME"};
+    cfg_reset(realtime_key, 1);
+    CHECK(cfg_bool("TOTK_REALTIME") == (rt_game_version != 0), "reset restores the game's real-time default");
     for (int i = 0; cfg_meta_at(i); i++) {
         const CfgMeta *m = cfg_meta_at(i);
         if (!*m->def) continue;

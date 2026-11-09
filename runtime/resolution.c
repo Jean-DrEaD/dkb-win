@@ -53,26 +53,11 @@ static struct {
 } R;
 
 static void decide(void) {
-    static char last_out[64] = {0};
-    static char last_scale[64] = {0};
-    static char last_preset[64] = {0};
-
-    const char *o = cfg_value("TOTK_OUTPUT_RES");
-    const char *s = cfg_value("TOTK_RENDER_SCALE");
-    const char *p = cfg_value("TOTK_UPSCALER_PRESET");
-    if (!o) o = "1920x1080";
-    if (!s) s = "game";
-    if (!p) p = "native";
-
-    if (R.decided && !strcmp(o, last_out) && !strcmp(s, last_scale) && !strcmp(p, last_preset))
-        return;
+    if (R.decided) return;
     R.decided = 1;
-    snprintf(last_out, sizeof last_out, "%s", o);
-    snprintf(last_scale, sizeof last_scale, "%s", s);
-    snprintf(last_preset, sizeof last_preset, "%s", p);
-
     R.ow = BASE_W;
     R.oh = BASE_H;
+    const char *o = cfg_value("TOTK_OUTPUT_RES");
     unsigned w = 0, h = 0;
     char tail;
     if (sscanf(o, "%ux%u%c", &w, &h, &tail) == 2 && w >= 1280 && h >= 720 && w <= 7680 && h <= 4320) {
@@ -81,26 +66,8 @@ static void decide(void) {
     } else {
         rt_log("resolution: TOTK_OUTPUT_RES=%s is not <width>x<height> in 1280x720..7680x4320; 1920x1080", o);
     }
-
-    double k = 1.0;
-    if (!strcmp(p, "ultra_performance")) {
-        k = 0.3333333333333333;
-        R.scene_set = 1;
-    } else if (!strcmp(p, "performance")) {
-        k = 0.50;
-        R.scene_set = 1;
-    } else if (!strcmp(p, "balanced")) {
-        k = 0.58;
-        R.scene_set = 1;
-    } else if (!strcmp(p, "quality")) {
-        k = 0.6666666666666666;
-        R.scene_set = 1;
-    } else if (!strcmp(p, "native")) {
-        k = 1.0;
-    } else {
-        k = 5.0 / 6.0;
-    }
-
+    const char *s = cfg_value("TOTK_RENDER_SCALE");
+    double k = 5.0 / 6.0;
     if (strcmp(s, "game")) {
         char *end;
         double pct = strtod(s, &end);
@@ -108,17 +75,19 @@ static void decide(void) {
             k = pct / 100.0;
             R.scene_set = 1;
         } else {
-            rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; using preset", s);
+            rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; game", s);
         }
     }
     double sw = R.ow * k, sh = R.oh * k;
     double fit = fmin(1.0, fmin(SCENE_MAX / sw, SCENE_MAX / sh));
     if (fit < 1.0) R.scene_set = 1;
-    R.sw = (unsigned)(sw * fit + 0.5) & ~1u;
-    R.sh = (unsigned)(sh * fit + 0.5) & ~1u;
+    R.sw = (unsigned)(sw * fit + 0.5);
+    R.sh = (unsigned)(sh * fit + 0.5);
 }
 
 static int bigger(void) {
+    // These sizes and HeapDef belong to TotK. Bananza uses dkb_wide_init.
+    if (!rt_game_version) return 0;
     decide();
     return R.ow != BASE_W || R.oh != BASE_H || R.scene_set;
 }
@@ -227,6 +196,10 @@ void res_heapdef_served(void) { R.heapdef_ok = 1; }
 static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 
 void res_init(void) {
+    if (!rt_game_version) {
+        dkb_wide_init();
+        return;
+    }
     if (!bigger()) {
         rt_log("resolution: the game's own (output 1920x1080, scene 1600x900)");
         return;
@@ -284,6 +257,7 @@ int res_is_16x9(unsigned w, unsigned h) {
 // The game resolution asks for a romfs-patches-<w>x<h> overlay: it is not 16:9 and the game version has the camera
 // aspect patch (set aspect); the UI layouts of another shape only fit a camera that follows the same shape.
 int res_wants_wide_overlay(const unsigned out[2]) {
+    if (!rt_game_version) return dkb_wide_output(NULL);
     return !res_is_16x9(out[0], out[1]) && rt_patch_set("aspect") >= 0;
 }
 
@@ -311,14 +285,16 @@ void res_fov_live(void) {
 }
 
 void res_wanted(unsigned out[2]) {
+    if (!rt_game_version) {
+        dkb_wide_output(out);
+        return;
+    }
     decide();
     out[0] = R.ow, out[1] = R.oh;
 }
 
 void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
-    out[0] = R.ow ? R.ow : BASE_W;
-    out[1] = R.oh ? R.oh : BASE_H;
-    scene[0] = R.sw ? R.sw : SCENE_W;
-    scene[1] = R.sh ? R.sh : SCENE_H;
+    out[0] = R.on ? R.ow : BASE_W, out[1] = R.on ? R.oh : BASE_H;
+    scene[0] = R.on ? R.sw : SCENE_W, scene[1] = R.on ? R.sh : SCENE_H;
 }

@@ -36,6 +36,10 @@
 // The code layout the translator sees (graphics: code[0x30..], compute: code[0..]; c1 = code[c1..length]
 // with c1 and length at control+0x700) follows tools/shader_census.py, itself MacNativeGames' totk shader tooling (MIT).
 #include <ctype.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +112,8 @@ struct GfxShader {
     unsigned geometry_position;                         // v2: Position input/output, malformed interface bit 4
     Nvn2C0Layout c0;                                       // NVN 2 compute parameter-block layout, when has_c0
     int has_c0;
+    uint64_t origin;                                       // NVN 2 stage origin: note_origin, or nvn2-origins.bin by iid
+    uint64_t spirv_fnv;                                    // FNV-1a 64 of spirv; 0 until gfx_shader_spirv_fnv fills it
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -381,6 +387,14 @@ static int child_start(Svc *v) {
         return 0;
     }
     uint32_t err = 0;
+#ifndef _WIN32
+    // An archive unpacked without Unix modes leaves the translator unexecutable (issue #122: error 13 for every
+    // shader, so full-screen draws were dropped); make it executable once instead of failing every request.
+    if (access(xlate_exe, X_OK) != 0) {
+        if (chmod(xlate_exe, 0755) == 0) rt_log("gfx_shader: %s was not executable; fixed", xlate_exe);
+        else rt_log("gfx_shader: %s is not executable and chmod failed", xlate_exe);
+    }
+#endif
     v->child = plat_child_start(xlate_exe, "--serve", &err);
     if (!v->child) {
         rt_log("gfx_shader: cannot start %s (error %lu)", xlate_exe, (unsigned long)err);
@@ -1358,7 +1372,7 @@ static void use_store(const uint8_t h[32], const UseMask *m) {
     char p[PATH_CAP + 80];
     use_path(h, p);
     uint32_t f[5] = {USE_MAGIC, USE_VERSION, m->slots, m->attrs, m->fouts};
-    plat_file_write_atomic(p, f, sizeof f);
+    plat_file_write_cache(p, f, sizeof f);
     plat_mutex_lock(&cache_lock);
     use_put(h, 1, m);
     plat_mutex_unlock(&cache_lock);
@@ -1776,11 +1790,115 @@ static const GfxShader *get_one(const Req *r, int stage, const uint8_t *control,
     return t;
 }
 
+// NVN 2 stage origins by input id, kept in <shader cache>/nvn2-origins.bin (40-byte records: the input id, then the
+// origin, little-endian). An origin is known only where the stage's code was lowered in this process (nvn2_origin),
+// and the boot prewarm builds pipelines from the shader cache without lowering anything: the table carries each
+// origin, met while the game or --translate-shaders lowered the stage, over to later runs. Fixes keyed by origin
+// (vk_pipeline.c screen_uv_stage) need it there. An input id does not depend on the translator, so a new translator
+// keeps the table. A torn last record (a crash while appending) is ignored, and the next append overwrites it, so
+// records stay on 40-byte boundaries. note_origin records the origin of every stage it meets (the lowered code pointer
+// is only known there) in the shader and, for an input id not in the table yet, in the file: a shader shared by two
+// stages keeps the first one seen, and the file does not grow on later runs.
+#define ORIGIN_SLOTS (1u << 16)
+typedef struct { uint8_t iid[32]; uint64_t origin; } OriginRec;
+static OriginRec *origin_tab;            // open addressing on the first 4 bytes of the id; origin 0 marks a free slot
+static uint32_t origin_used;
+static long origin_good;                 // bytes of whole records in the file when it was loaded
+static int origin_read;                  // the file was opened and read: only then may a torn tail be overwritten
+static PlatMutex origin_lock = PLAT_MUTEX_INIT;
+static PlatOnce origin_once = PLAT_ONCE_INIT;
+
+static OriginRec *origin_slot(const uint8_t iid[32]) {
+    uint32_t h;
+    memcpy(&h, iid, 4);
+    for (uint32_t i = 0; i < ORIGIN_SLOTS; i++) {
+        OriginRec *r = &origin_tab[(h + i) & (ORIGIN_SLOTS - 1)];
+        if (!r->origin || !memcmp(r->iid, iid, 32)) return r;
+    }
+    return NULL;
+}
+
+static void origin_put(const uint8_t iid[32], uint64_t origin) {   // under origin_lock
+    OriginRec *r = origin_tab && origin_used < ORIGIN_SLOTS * 3 / 4 ? origin_slot(iid) : NULL;
+    if (!r) return;
+    if (!r->origin) origin_used++;
+    memcpy(r->iid, iid, 32), r->origin = origin;
+}
+
+static void origin_load(void *param) {
+    (void)param;
+    paths();
+    origin_tab = calloc(ORIGIN_SLOTS, sizeof *origin_tab);
+    if (!origin_tab || !cache_dir[0]) return;
+    char path[PATH_CAP + 32];
+    snprintf(path, sizeof path, "%s/nvn2-origins.bin", cache_dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    origin_read = 1;
+    OriginRec r;
+    uint8_t buf[40];
+    while (fread(buf, 1, sizeof buf, f) == sizeof buf) {
+        memcpy(r.iid, buf, 32), memcpy(&r.origin, buf + 32, 8);
+        if (r.origin) origin_put(r.iid, r.origin);
+        origin_good += sizeof buf;
+    }
+    fclose(f);
+}
+
+static void note_origin(const GfxShader *s, const uint8_t *code) {
+    if (!s || __atomic_load_n(&s->origin, __ATOMIC_RELAXED)) return;
+    uint64_t o = nvn2_origin(code);
+    if (!o) return;
+    __atomic_store_n(&((GfxShader *)s)->origin, o, __ATOMIC_RELAXED);
+    plat_once(&origin_once, origin_load, NULL);
+    plat_mutex_lock(&origin_lock);
+    OriginRec *r = origin_tab && origin_used < ORIGIN_SLOTS * 3 / 4 ? origin_slot(s->iid) : NULL;
+    if (r && !r->origin && cache_dir[0]) {
+        static FILE *append;   // kept open: --translate-shaders notes thousands of stages from several threads
+        static int tried;
+        origin_put(s->iid, o);
+        if (!tried) {
+            tried = 1;
+            char path[PATH_CAP + 32];
+            snprintf(path, sizeof path, "%s/nvn2-origins.bin", cache_dir);
+            // Not "ab" when the file was read: a torn tail must be overwritten, not appended after. A file that could
+            // not be read (a lock, say) is only appended to, so records already in it are never overwritten, and a
+            // failed seek writes nothing rather than appending after a torn tail.
+            if (origin_read) {
+                append = fopen(path, "r+b");
+                if (append && fseek(append, origin_good, SEEK_SET)) fclose(append), append = NULL;
+            } else {
+                append = fopen(path, "ab");
+            }
+        }
+        if (append) {
+            uint8_t buf[40];
+            memcpy(buf, s->iid, 32), memcpy(buf + 32, &o, 8);
+            fwrite(buf, 1, sizeof buf, append);
+            fflush(append);
+        }
+    }
+    plat_mutex_unlock(&origin_lock);
+}
+
+uint64_t gfx_shader_origin(const GfxShader *s) {
+    uint64_t o = __atomic_load_n(&s->origin, __ATOMIC_RELAXED);
+    if (o) return o;
+    plat_once(&origin_once, origin_load, NULL);
+    plat_mutex_lock(&origin_lock);
+    OriginRec *r = origin_tab ? origin_slot(s->iid) : NULL;
+    o = r ? r->origin : 0;
+    plat_mutex_unlock(&origin_lock);
+    if (o) __atomic_store_n(&((GfxShader *)s)->origin, o, __ATOMIC_RELAXED);
+    return o;
+}
+
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                 const uint8_t *c1, const GfxShaderAnswers *a) {
     Req r;
     if (!req_init(&r, stage, control, code, code_size, c1, a)) return NULL;
     const GfxShader *s = get_one(&r, stage, control, code, a);
+    note_origin(s, code);
     if (s) ans_note(&r, stage, control, code, a, s);
     return s;
 }
@@ -1805,13 +1923,23 @@ static void in_path(const uint8_t iid[32], char *p) {
     snprintf(p, PATH_CAP + 80, "%s/in/%s.in", cache_dir, hex);
 }
 
+static int in_load_from(const uint8_t iid[32], Inputs *in, int packed);
+
 // Stores the inputs of a translation unless they are stored already; the file appears whole (written, then renamed).
+// A stored file that does not load (torn by a power loss) is written again.
 static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, const uint8_t *code, const Req *r,
                      const GfxShaderAnswers *a) {
     if (nvn_geometry_control_get(control, CONTROL_SIZE, code, r->length, NULL) < 0) return;
     char p[PATH_CAP + 80], tmp[PATH_CAP + 120];
     in_path(iid, p);
-    if (pack_find(PACK_IN, iid) || file_exists(p)) return;
+    if (pack_find(PACK_IN, iid)) return;
+    if (file_exists(p)) {
+        Inputs old;
+        if (in_load_from(iid, &old, 0)) {
+            free(old.buf);
+            return;
+        }
+    }
     int gs = stage == GFX_STAGE_GS;
     InHeader h = {IN_MAGIC, gs ? GS_IN_VERSION : IN_VERSION, (uint32_t)stage, r->length, r->c1_len,
                   gs ? GS_ANS_PACKED : LEGACY_ANS_SIZE};
@@ -1827,7 +1955,7 @@ static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, c
     if (r->c1_len) memcpy(o, r->c1, r->c1_len);
     snprintf(tmp, PATH_CAP + 120, "%s/in", cache_dir);
     mkdir_p(tmp);
-    plat_file_write_atomic(p, buf, n);
+    plat_file_write_cache(p, buf, n);
     free(buf);
 }
 
@@ -1991,7 +2119,8 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         plat_file_delete(spv_path), plat_file_delete(res_path);
         return fail(reply, hex);
     }
-    plat_file_flush(spv_path), plat_file_flush(res_path);   // the translator wrote them; on disk before use or rename
+    // No flush to the disk: the cache readers reject a torn file (disk_load_from, use and input checks), so a power loss
+    // costs a translation, while an fsync per file cost seconds on a cold cache.
     if (!(s = request_disk_load(r, key, r->iid))) return fail("translator output missing or malformed", hex);
     if (!r->final) {                                       // name the files after the cache key, remember the mask
         m = use_of(s);
@@ -1999,9 +2128,9 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         char mhex[65], to[PATH_CAP + 80];
         key_hex(mk, mhex);
         snprintf(to, PATH_CAP + 80, "%s/%s.spv", cache_dir, mhex);
-        int moved = plat_file_replace(spv_path, to);
+        int moved = plat_file_replace_cache(spv_path, to);
         snprintf(to, PATH_CAP + 80, "%s/%s.res.json", cache_dir, mhex);
-        moved = moved && plat_file_replace(res_path, to);
+        moved = moved && plat_file_replace_cache(res_path, to);
         if (moved) {
             use_store(r->code_hash, &m);
         } else {                                           // keep the mask for this run only
@@ -2019,8 +2148,36 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
 
 // The service round trip for a request that is in neither cache. One translation per cache key (per code hash while
 // the use mask is unknown) runs at a time; different shaders run in parallel on the children.
+// DKB_ANSWER_STATS=1: why a translation was needed in play. A shader whose answers, inside its use mask, are the
+// preparation's defaults (2D textures, float attributes and outputs) is in the shader cache after --prepare-shaders, so
+// each line names what differed: the texture slots and their types, the attributes, the colour outputs.
+static void answer_stats_note(const Req *r, int stage, const uint8_t *code, const GfxShaderAnswers *a) {
+    static int on = -1;
+    static volatile int64_t lines;
+    if (on < 0) on = cfg_get("DKB_ANSWER_STATS") != NULL;
+    if (!on || !a) return;
+    UseMask m = {0};
+    int known = r->final;
+    if (known) use_find(r->code_hash, &m);
+    char tex[160] = "", att[96] = "", out[64] = "";
+    size_t tn = 0, an = 0, on_ = 0;
+    for (int i = 0; i < 32; i++) {
+        if ((m.slots >> i & 1) && (a->tex_type[i] != GFX_TEX_2D || a->img_type[i]) && tn < sizeof tex - 24)
+            tn += (size_t)snprintf(tex + tn, sizeof tex - tn, " %d:t%d/i%d", i, a->tex_type[i], a->img_type[i]);
+        if ((m.attrs >> i & 1) && a->attr_type[i] != GFX_TYPE_FLOAT && an < sizeof att - 12)
+            an += (size_t)snprintf(att + an, sizeof att - an, " %d:%d", i, a->attr_type[i]);
+    }
+    for (int i = 0; i < 8; i++)
+        if ((m.fouts >> i & 1) && a->frag_out_type[i] != GFX_TYPE_FLOAT && on_ < sizeof out - 12)
+            on_ += (size_t)snprintf(out + on_, sizeof out - on_, " %d:%d", i, a->frag_out_type[i]);
+    if (plat_inc64(&lines) > 400) return;
+    rt_log("answers: translated in play: stage %d, use mask %s, NVN 2 stage %016llx; non-default textures [%s] attributes [%s] "
+           "outputs [%s]", stage, known ? "known" : "unknown", (unsigned long long)nvn2_origin(code), tex, att, out);
+}
+
 static const GfxShader *translate(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
                                   const GfxShaderAnswers *a) {
+    answer_stats_note(r, stage, code, a);
     int away = kern_core_away();
     const uint8_t *id = r->final ? r->key : r->code_hash;
     flight_enter(id);
@@ -2107,6 +2264,7 @@ const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const u
     Req r;
     if (!req_init(&r, stage, control, code, code_size, NULL, a)) return NULL;
     const GfxShader *s = get_async_one(r, stage, control, code, a, pending);
+    note_origin(s, code);
     if (s) ans_note(&r, stage, control, code, a, s);
     return s;
 }
@@ -2339,6 +2497,19 @@ void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **o
 const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
     if (words) *words = s->words;
     return s->spirv;
+}
+
+// The SPIR-V never changes after the shader is made, so the hash is taken on the first call and kept with the shader.
+// Threads that race on the first call compute the same value; 0 marks "not taken yet" (a real hash of 0 is just taken
+// again each time).
+uint64_t gfx_shader_spirv_fnv(const GfxShader *s) {
+    uint64_t h = __atomic_load_n(&s->spirv_fnv, __ATOMIC_RELAXED);
+    if (h) return h;
+    h = 0xcbf29ce484222325ull;
+    const uint8_t *b = (const uint8_t *)s->spirv;
+    for (uint64_t i = 0; b && i < s->words * 4; i++) h = (h ^ b[i]) * 0x100000001b3ull;
+    __atomic_store_n(&((GfxShader *)s)->spirv_fnv, h, __ATOMIC_RELAXED);
+    return h;
 }
 
 int gfx_shader_stage(const GfxShader *s) { return s->stage; }
@@ -2765,8 +2936,206 @@ void gfx_shader_prepare_recorded(int threads, int procs) {
 #define PRP_VERSION 1
 #define PRP_REC 36
 
+// ---- NVN 2 seed pack: every stage of the game's shader files (tools/dkb_shader_census.py writes seed-nvn2.bin)
+// "DKBN2SD1", u32 count, then per stage: u32 stage (GFX_STAGE_*), u32 control size, u32 code size, the control section
+// and the code, each padded to 4 bytes. Each stage is lowered as nvnProgramSetShaders lowers it and translated with the
+// default answers (every texture slot a 2D texture, float vertex inputs and colour outputs; a compute stage's local size
+// from its control). The answers do not change a shader's SPIR-V for slots it never reads (mask_answers), so a stage
+// whose draws bind other types (3D or cube textures, integer attributes) still translates on first use; play records
+// those variants and the boot prewarm keeps them.
+// Integer vertex attributes: a vertex stage whose draws bind integer formats (bone indices, packed colours) is a variant of
+// its default. A game has few vertex layouts, so the variants are patterns of Locations: the ones met in play so far
+// (Locations 6, 6 and 7, 3 and 4, all unsigned) and every other pattern the local shader-answers.bin recorded. A stage
+// that reads none of a pattern's Locations resolves to the same cache key as its default and costs a lookup.
+#define N2_PATS 32
+typedef struct { uint8_t attr[16]; } N2Pat;
+static const uint8_t n2_builtin_patterns[][16] = {
+    {[6] = GFX_TYPE_UINT}, {[6] = GFX_TYPE_UINT, [7] = GFX_TYPE_UINT}, {[3] = GFX_TYPE_UINT, [4] = GFX_TYPE_UINT},
+};
+
+typedef struct {
+    const uint8_t **rec;
+    size_t n;
+    N2Pat pat[N2_PATS];
+    int npat;
+    volatile int64_t next, done, translated, variants, failed, unlowered;
+    PlatMutex lock;                                        // guards prp
+    uint8_t *prp;                                          // shader-prepared.bin records (PRP_REC bytes), one per translation
+    size_t prp_n, prp_cap;
+} N2Prep;
+
+// The variant just resolved, for shader-prepared.bin: the driver pipeline libraries of everything listed are built after
+// the translation (vk_pipeline.c, lb_warm_prepared), so a draw finds them in the driver's cache. prio 0: a stage with the
+// default answers, 1: an integer-attribute variant.
+static void n2_note(N2Prep *p, int stage, int prio, const GfxShader *s) {
+    plat_mutex_lock(&p->lock);
+    if (p->prp_n == p->prp_cap) {
+        size_t cap = p->prp_cap ? p->prp_cap * 2 : 4096;
+        uint8_t *t = realloc(p->prp, cap * PRP_REC);
+        if (!t) {
+            plat_mutex_unlock(&p->lock);
+            return;
+        }
+        p->prp = t, p->prp_cap = cap;
+    }
+    uint8_t *r = p->prp + p->prp_n++ * PRP_REC;
+    memset(r, 0, PRP_REC);
+    r[0] = (uint8_t)(stage < 6 ? stage : 0), r[1] = (uint8_t)prio;
+    memcpy(r + 4, s->iid, 32);
+    plat_mutex_unlock(&p->lock);
+}
+
+static void n2_add_pattern(N2Prep *p, const uint8_t attr[16]) {
+    static const uint8_t zero[16];
+    if (!memcmp(attr, zero, 16) || p->npat >= N2_PATS) return;
+    for (int i = 0; i < p->npat; i++)
+        if (!memcmp(p->pat[i].attr, attr, 16)) return;
+    memcpy(p->pat[p->npat++].attr, attr, 16);
+}
+
+static void n2_worker(void *arg) {
+    N2Prep *p = arg;
+    for (;;) {
+        size_t i = (size_t)plat_inc64(&p->next) - 1;
+        if (i >= p->n) return;
+        const uint8_t *r = p->rec[i];
+        uint32_t st, ctl_size;
+        memcpy(&st, r, 4), memcpy(&ctl_size, r + 4, 4);
+        const uint8_t *control = r + 12, *code = control + ((ctl_size + 3) & ~3u), *nctl, *ncode;
+        if (!nvn2_lower(control, code, &nctl, &ncode)) {
+            plat_inc64(&p->unlowered), plat_inc64(&p->done);
+            continue;
+        }
+        GfxShaderAnswers a;
+        memset(&a, 0, sizeof a);
+        if (st == GFX_STAGE_CS) {
+            for (int k = 0; k < 3; k++) {
+                uint32_t l;
+                memcpy(&l, nctl + 0x748 + 4 * k, 4);
+                a.local[k] = (uint16_t)(l ? l : 1);
+            }
+        } else {
+            memset(a.tex_type, GFX_TEX_2D, sizeof a.tex_type);
+        }
+        uint32_t length;
+        memcpy(&length, nctl + 0x704, 4);
+        uint64_t x0 = (uint64_t)n_xlated;
+        const GfxShader *s = gfx_shader_get((int)st, nctl, ncode, length, NULL, &a);
+        if (!s) plat_inc64(&p->failed);
+        else if ((uint64_t)n_xlated != x0) plat_inc64(&p->translated);
+        if (s) n2_note(p, (int)st, 0, s);
+        if (s && st == GFX_STAGE_VS)
+            for (int k = 0; k < p->npat; k++) {
+                GfxShaderAnswers b = a;
+                memcpy(b.attr_type, p->pat[k].attr, sizeof p->pat[k].attr);
+                x0 = (uint64_t)n_xlated;
+                const GfxShader *v = gfx_shader_get((int)st, nctl, ncode, length, NULL, &b);
+                if (!v) plat_inc64(&p->failed);
+                else {
+                    if ((uint64_t)n_xlated != x0) plat_inc64(&p->variants);
+                    if (memcmp(v->iid, s->iid, 32)) n2_note(p, (int)st, 1, v);   // the same id as the default: listed already
+                }
+            }
+        plat_inc64(&p->done);
+    }
+}
+
+// 0 when the pack was read (stages that fail to translate are counted, not fatal), 1 when it cannot be read.
+static int prepare_nvn2(const char *path, const char *dir, int threads, int procs) {
+    double t0 = (double)plat_now_ms();
+    FILE *f = fopen(path, "rb");
+    if (!f) return 1;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *buf = size > 12 ? malloc((size_t)size) : NULL;
+    if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size || memcmp(buf, "DKBN2SD1", 8)) {
+        fclose(f), free(buf);
+        rt_log("gfx_shader: prepare: %s is not an NVN 2 seed pack", path);
+        return 1;
+    }
+    fclose(f);
+    uint32_t count;
+    memcpy(&count, buf + 8, 4);
+    N2Prep p = {.rec = calloc(count + 1, sizeof *p.rec), .lock = PLAT_MUTEX_INIT};
+    for (size_t i = 0; i < sizeof n2_builtin_patterns / sizeof *n2_builtin_patterns; i++) n2_add_pattern(&p, n2_builtin_patterns[i]);
+    {   // patterns this machine's play recorded
+        char rec_path[PATH_CAP + 32];
+        uint8_t *ab = NULL;
+        size_t an = 0;
+        snprintf(rec_path, sizeof rec_path, "%s/shader-answers.bin", dir);
+        if (answers_read(rec_path, &ab, &an, 0))
+            for (size_t i = 0; i < an / ANS_REC; i++) {
+                const uint8_t *r = ab + i * ANS_REC;
+                uint32_t rs;
+                memcpy(&rs, r, 4);
+                if (rs == GFX_STAGE_VS) n2_add_pattern(&p, r + 68 + 96);   // attr_type[0..15] of the packed answers
+            }
+        free(ab);
+    }
+    const uint8_t *at = buf + 12, *end = buf + size;
+    for (uint32_t i = 0; p.rec && i < count; i++) {
+        uint32_t cl, len;
+        if (end - at < 12) break;
+        memcpy(&cl, at + 4, 4), memcpy(&len, at + 8, 4);
+        size_t total = 12 + (((size_t)cl + 3) & ~(size_t)3) + (((size_t)len + 3) & ~(size_t)3);
+        if ((size_t)(end - at) < total) break;
+        p.rec[p.n++] = at, at += total;
+    }
+    threads = threads < 1 ? 1 : threads > 64 ? 64 : threads;
+    svc_set_limit(procs);
+    PlatThread *t[64];
+    int k = 0;
+    for (int i = 0; p.rec && i < threads; i++)
+        if ((t[k] = plat_thread_new(n2_worker, &p, "nvn2 prepare"))) k++;
+    if (!k && p.rec) n2_worker(&p);
+    for (int m = 0; m < k; m++)
+        while (!plat_thread_join_ns(t[m], 5000000000u))
+            rt_log("gfx_shader: prepare: NVN 2 seed %lld of %zu stages, %lld translated, %.0f ms", (long long)p.done, p.n,
+                   (long long)p.translated, (double)plat_now_ms() - t0);
+    svc_set_limit(svc_runtime_limit());
+    {   // shader-prepared.bin: one record per input id, default variants first
+        char out[PATH_CAP + 32];
+        snprintf(out, sizeof out, "%s/shader-prepared.bin", dir);
+        size_t u = 0;
+        uint8_t *recs = calloc(p.prp_n + 1, PRP_REC);
+        Set64 seen = {0};
+        for (int prio = 0; recs && prio < 2; prio++)
+            for (size_t i = 0; i < p.prp_n; i++) {
+                const uint8_t *r = p.prp + i * PRP_REC;
+                if (r[1] != prio || !set_add(&seen, hash8(r + 4))) continue;
+                memcpy(recs + u++ * PRP_REC, r, PRP_REC);
+            }
+        free(seen.v);
+        RecHeader h = {{'T', 'O', 'T', 'K', 'S', 'P', 'R', 'P'}, PRP_VERSION, PRP_REC};
+        uint8_t *file = recs ? malloc(sizeof h + u * PRP_REC + 1) : NULL;
+        if (file) {
+            memcpy(file, &h, sizeof h), memcpy(file + sizeof h, recs, u * PRP_REC);
+            if (!plat_file_write_atomic(out, file, sizeof h + u * PRP_REC)) rt_log("gfx_shader: cannot write %s", out);
+        }
+        rt_log("gfx_shader: %zu prepared variants listed in %s", u, out);
+        free(file), free(recs);
+    }
+    free(p.prp);
+    char msg[320];
+    snprintf(msg, sizeof msg, "gfx_shader: prepared %zu NVN 2 stages: %lld translated, %lld already cached, %lld failed to "
+             "translate, %lld did not lower; %lld integer-attribute variants from %d patterns; %.0f ms", p.n,
+             (long long)p.translated, (long long)(p.done - p.translated - p.failed - p.unlowered), (long long)p.failed,
+             (long long)p.unlowered, (long long)p.variants, p.npat, (double)plat_now_ms() - t0);
+    rt_log("%s", msg);
+    printf("%s\n", msg);
+    free(p.rec), free(buf);
+    return 0;
+}
+
 int gfx_shader_prepare_seed(const char *dir, int threads, int procs) {
-    char ans[PATH_CAP + 32], prg[PATH_CAP + 32], out[PATH_CAP + 32];
+    char ans[PATH_CAP + 32], prg[PATH_CAP + 32], out[PATH_CAP + 32], n2[PATH_CAP + 32];
+    snprintf(n2, sizeof n2, "%s/seed-nvn2.bin", dir);
+    if (plat_file_exists(n2)) {
+        int rc = prepare_nvn2(n2, dir, threads, procs);
+        snprintf(ans, sizeof ans, "%s/seed-answers.bin", dir);
+        if (rc || !plat_file_exists(ans)) return rc;   // no MacNativeGames-style seed beside it: done
+    }
     snprintf(ans, sizeof ans, "%s/seed-answers.bin", dir);
     snprintf(prg, sizeof prg, "%s/seed-programs.bin", dir);
     snprintf(out, sizeof out, "%s/shader-prepared.bin", dir);

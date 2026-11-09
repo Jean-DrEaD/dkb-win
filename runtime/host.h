@@ -78,8 +78,7 @@ void rt_sha256(const void *p, size_t n, uint8_t out[32]);   // BCrypt; fatal if 
 #define RT_HOSTFN_BASE 0x7020000000ull
 // The game's application/program id (main.npdm ACI0): Donkey Kong Bananza. GetInfo 18 returns it and save data is
 // kept for it alone.
-extern const uint64_t rt_application_id;
-#define RT_APPLICATION_ID rt_application_id
+#define RT_APPLICATION_ID 0x040074a01bf12000ull
 #define RT_HOSTFN_SIZE 0x100000ull
 
 // ---- AAPCS64 argument access for host functions (section 2.2)
@@ -101,9 +100,12 @@ typedef struct { const char *name; GuestFn fn; } RtHostEntry;
 // File-scope declarations; fn must be declared before. The loader binds them by symbol name. The entries of every
 // object file meet in one section per kind, which hostfn.c walks: on PE/COFF ".ovr$m", which the linker sorts between
 // hostfn.c's ".ovr$a" and ".ovr$z" markers; on ELF "totk_ovr", which the linker brackets with __start_totk_ovr and
-// __stop_totk_ovr.
+// __stop_totk_ovr; on Mach-O "__DATA,__totk_ovr", which ld64 brackets with section$start$__DATA$__totk_ovr and
+// section$end$__DATA$__totk_ovr.
 #ifdef _WIN32
 #define RT_HOST_SECTION(kind) section("." #kind "$m")
+#elif defined(__APPLE__)
+#define RT_HOST_SECTION(kind) section("__DATA,__totk_" #kind)
 #else
 #define RT_HOST_SECTION(kind) section("totk_" #kind)
 #endif
@@ -192,6 +194,8 @@ extern const RtFileHash rt_exefs_sha256[];                 // tools/data/expecte
 extern const int rt_exefs_sha256_count;
 extern const char rt_default_exefs[], rt_default_romfs[], rt_default_profile[];
 extern const int rt_game_version;                          // the game build: 111 (1.1.1), 121 (1.2.1) or 143 (1.4.3)
+extern const char rt_game_target[];                        // build target, including dkb100 and dkb458752
+extern const char rt_game_display[];                       // the same version as a release name: 1.4.3, 1.0.0+458752
 extern const char rt_port_version[];                       // VERSION at the build's root: 0.1.0, 0.1.0+973c626 in a release
 #define RT_V111 (rt_game_version == 111)                    // 1.1.1: its own boot constants and data slots
 #define RT_V143 (rt_game_version >= 143)
@@ -259,6 +263,8 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   //
                                                            // the grown heaps, malloc'd; 0 = cannot (logged)
 void res_heapdef_served(void);                             // romfs.c serves the grown table
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
+void dkb_wide_init(void);                                  // Bananza-only virtual display and camera patch values
+int dkb_wide_output(unsigned out[2]);                      // active mode; optional output gets its size or the stock size
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on)
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
@@ -274,6 +280,7 @@ void rt_patch_disable(int set);                            // before the guest s
 void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code
                                                            // the next time it runs
 void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)
+void dkb_camera_init(void);                                // camera patch callbacks, before hostfn_seal
 void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns
@@ -323,4 +330,5 @@ int probe_vkreset(void);                                  // vk_reset_probe.c: o
 int probe_vkclear(void);                                                  // vk_clear_probe.c
 int probe_movie(void);                                     // movie_probe.c: host VP9 movie::Decoder on one RomFS movie
 int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)
-int vk_pipeline_warm_shaders(void);                        // vk_pipeline.c: --warm-shaders (tools/build_game.py)
+int vk_pipeline_translate_shaders(void);                  // vk_pipeline.c: --translate-shaders (installer/bananza.py)
+int vk_pipeline_warm_shaders(void);                       // vk_pipeline.c: --warm-shaders (tools/build_game.py)

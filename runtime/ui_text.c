@@ -33,9 +33,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_DEFAULT_MARK] = "default",
     [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
     [UI_MENU_SAVE_FAILED] = "could not save settings",
-    [UI_MENU_VERSION] = "DK Recomp",
+    [UI_MENU_VERSION] = "DKB Recomp %s, game %s",
 
     [UI_MENU_FULLSCREEN] = "Fullscreen", [UI_MENU_FULLSCREEN_DESC] = "Fills the screen with the game; F11 toggles it.",
+    [UI_MENU_WINDOW_MODE] = "Window mode",
+    [UI_MENU_WINDOW_MODE_DESC] = "Windowed, borderless over the screen, or fullscreen; F11 switches between windowed and the last full-screen mode.",
+    [UI_MENU_WINDOW_MODE_WINDOWED] = "Windowed", [UI_MENU_WINDOW_MODE_BORDERLESS] = "Borderless",
+    [UI_MENU_WINDOW_MODE_FULLSCREEN] = "Fullscreen",
     [UI_MENU_WINDOW_SIZE] = "Window size", [UI_MENU_WINDOW_SIZE_DESC] = "Size of the game window when not fullscreen.",
     [UI_MENU_WINDOW_SIZE_CUSTOM] = "Custom",
     [UI_MENU_WINDOWED_ONLY] = "Only available in windowed mode",
@@ -52,6 +56,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f fps",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Render resolution",
+    [UI_MENU_ULTRAWIDE] = "Ultrawide",
+    [UI_MENU_ULTRAWIDE_DESC] = "Expand the camera's horizontal view for 21:9 or 32:9. Menus keep their proportions. "
+                              "Off uses a 16:9 view. Changing this selects a resolution with the nearest height. Restart to apply.",
+    [UI_MENU_WIDE_RES] = "Render resolution",
+    [UI_MENU_WIDE_RES_DESC] = "The resolution the game renders before scaling the image to your window or screen. "
+                             "Higher resolutions improve detail but need more GPU time and video memory. "
+                             "Ultrawide enables the 21:9 and 32:9 choices. Restart to apply.",
+    [UI_MENU_HUD_POSITION] = "HUD position",
+    [UI_MENU_HUD_POSITION_DESC] = "Place corner displays near the screen edges, or keep them inside a centered 16:9 "
+                                 "area. Menus and aiming markers stay centered. Restart to apply.",
+    [UI_MENU_HUD_EDGES] = "Screen edges", [UI_MENU_HUD_CENTERED] = "Centered (16:9)",
+    [UI_MENU_WIDE_DISABLED] = "Enable Ultrawide first",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
                                 "more video memory and GPU time. A wider size (21:9) widens the camera's view and moves "
                                 "the HUD to the screen's corners; a taller one (16:10, Steam Deck) moves it to the top "
@@ -64,29 +80,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALER_DESC] = "How the picture is scaled when the window is larger than the game resolution. FSR keeps "
                               "edges and detail sharper than bilinear.",
     [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; nvngx_dlss.dll next to dkb.exe): smoother "
-                          "edges and higher frame rates with AI reconstruction.",
-    [UI_MENU_DLSS] = "DLSS mode",
-    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
-                          "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
-    [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
-    [UI_MENU_UPSCALE_PRESET] = "Upscaler quality preset",
-    [UI_MENU_UPSCALE_PRESET_DESC] = "Picks the 3D render scale for the upscaler (DLSS or AMD FSR): Quality 67 %, Balanced 58 %, "
-                                    "Performance 50 %, Ultra Performance 33 %, Native 100 %.",
-    [UI_MENU_DLSS_MODEL] = "DLSS model",
-    [UI_MENU_DLSS_MODEL_DESC] = "Selects the neural model generation and preset. DLSS 4 (Preset K / J) is tuned for "
-                                "Native / Quality / Balanced; DLSS 4.5 (Preset M / L) is tuned for Performance (50 %) "
-                                "and Ultra Performance (33 %).",
-    [UI_MENU_DLSS_PRESET] = "DLSS model",
-    [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs.",
-    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
-    [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
-    [UI_MENU_DLSS_CHARS] = "DLSS character trails",
-    [UI_MENU_DLSS_CHARS_DESC] = "Reduces faint trails behind moving characters.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
-    [UI_MENU_DLSS_CHARS_FULL] = "Full",
     [UI_MENU_ASPECT] = "Fit picture to window",
     [UI_MENU_ASPECT_DESC] = "When the window's shape differs from the game resolution's (a 16:9 picture on a 21:9 "
                             "screen): keep the picture's shape with black bars, or stretch it over the window. "
@@ -96,6 +89,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game version 1.4.3 only.",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
+    [UI_MENU_SMAA] = "Anti-aliasing (SMAA)",
+    [UI_MENU_SMAA_DESC] = "Smooths jagged edges on the final picture, after it is scaled to the window and before this "
+                          "menu is drawn. The HUD is smoothed too. Higher quality costs more GPU time.",
+    [UI_MENU_SMAA_LOW] = "Low", [UI_MENU_SMAA_MEDIUM] = "Medium", [UI_MENU_SMAA_HIGH] = "High",
     [UI_MENU_COLOR] = "Colour",
     [UI_MENU_COLOR_PRESET] = "Colour profile",
     [UI_MENU_COLOR_PRESET_DESC] = "Sets the four values below. Vivid: more contrast and saturation, shadows opened a "
@@ -113,6 +110,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_COLOR_GAMMA_DESC] = "Below 1 brightens dark and middle tones, above 1 darkens them; 1 leaves them.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
+    [UI_MENU_DKB_FPS_LIMIT_DESC] = "With Game speed follows the clock enabled, changes apply immediately. Above 60 "
+                                 "needs that experimental setting and enough CPU and GPU performance.",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
                                "follows the clock.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
@@ -121,6 +120,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_DISPLAY] = "Monitor rate", [UI_MENU_FPS_DISPLAY_HZ] = "Monitor rate (%.0f Hz)",
     [UI_MENU_REALTIME] = "Game speed follows the clock",
     [UI_MENU_REALTIME_DESC] = "Steps the game by real time, so a slow frame does not slow the game down.",
+    [UI_MENU_DKB_REALTIME_DESC] = "Experimental; off by default. Adjusts game timing to measured frame duration. "
+                                "Camera, physics, cutscenes and audio still need validation. Requires restarting.",
     [UI_MENU_CLOTH_REALTIME] = "Cloth on the clock",
     [UI_MENU_CLOTH_REALTIME_DESC] = "Steps cloth and hair by real time as well.",
     [UI_MENU_HIGHFPS_FIX] = "High frame rate fixes",
@@ -137,6 +138,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "way can stop for good.",
 
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Master volume of the game.",
+    [UI_MENU_AUDIO_CHANNELS] = "Speakers",
+    [UI_MENU_AUDIO_CHANNELS_DESC] = "Stereo or 5.1 surround output. Automatic picks 5.1 when the default output device "
+                                    "has six or more channels. Applies after a restart.",
+    [UI_MENU_CHANNELS_AUTO] = "Automatic", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1 surround",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
@@ -159,6 +164,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_PROMPTS_RESTART] = "prompts change after restart",
     [UI_MENU_STICK_DEADZONE] = "Stick dead zone",
     [UI_MENU_STICK_DEADZONE_DESC] = "How far a gamepad stick moves before the game sees it. Raise it if the character or the camera moves on its own.",
+    [UI_MENU_MOUSE_CAMERA] = "Direct mouse camera",
+    [UI_MENU_MOUSE_CAMERA_DESC] = "Rotate the normal follow camera directly with mouse movement, without controller "
+                                "acceleration or smoothing. Other camera modes use controller-style mouse input. "
+                                "Off restores controller-style input everywhere.",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
 
@@ -210,6 +219,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
 
     [UI_MENU_MENU_LANG] = "Menu language", [UI_MENU_MENU_LANG_DESC] = "Language of this menu and the overlay.",
     [UI_MENU_MENU_LANG_AUTO] = "Automatic (from Windows)",
+    [UI_MENU_THEME] = "Menu theme", [UI_MENU_THEME_DK] = "Donkey Kong", [UI_MENU_THEME_CLASSIC] = "Classic",
+    [UI_MENU_THEME_DESC] = "Look of this menu: Donkey Kong (bark and banana yellow) or the classic dark green and gold.",
 
     [UI_MENU_ADV_WARNING] = "These settings are for testing and troubleshooting. Change them only when you know why.",
     [UI_MENU_GROUP_SCHED] = "Scheduling", [UI_MENU_GROUP_SHADERS] = "Shaders and pipelines",
@@ -253,6 +264,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Fills the driver-reserved constant bank c0 (storage sizes, dispatch size, point size, base instance) instead of reading zeros.",
     [UI_MENU_FIX_ZERO] = "Zero new GPU memory",
     [UI_MENU_FIX_ZERO_DESC] = "New GPU memory pools start zero-filled, as Switch memory does.",
+    [UI_MENU_LIST_RESTART] = "Primitive restart on lists",
+    [UI_MENU_LIST_RESTART_DESC] = "Applies the game's primitive restart to triangle-list draws, as the Switch does. Without it the restart indices are drawn as vertices: long stretched triangles, for example on the map. Needs a GPU with primitiveTopologyListRestart.",
     [UI_MENU_BIND_SKIP] = "Skip repeated binds",
     [UI_MENU_BIND_SKIP_DESC] = "Optimisation: skips bindings that did not change.",
     [UI_MENU_SHADER_MEMO] = "Shader memo", [UI_MENU_SHADER_MEMO_DESC] = "Optimisation: remembers shader lookups.",
@@ -317,9 +330,13 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DEFAULT_MARK] = "по умолчанию",
     [UI_MENU_AFTER_RESTART] = "после перезапуска", [UI_MENU_SET_BY_ENV] = "задано переменной окружения",
     [UI_MENU_SAVE_FAILED] = "не удалось сохранить настройки",
-    [UI_MENU_VERSION] = "DK Recomp",
+    [UI_MENU_VERSION] = "DKB Recomp %s, игра %s",
 
     [UI_MENU_FULLSCREEN] = "Полный экран", [UI_MENU_FULLSCREEN_DESC] = "Игра на весь экран; F11 переключает режим.",
+    [UI_MENU_WINDOW_MODE] = "Режим окна",
+    [UI_MENU_WINDOW_MODE_DESC] = "Оконный, без рамки или полный экран; F11 переключает между окном и последним полноэкранным режимом.",
+    [UI_MENU_WINDOW_MODE_WINDOWED] = "В окне", [UI_MENU_WINDOW_MODE_BORDERLESS] = "Без рамки",
+    [UI_MENU_WINDOW_MODE_FULLSCREEN] = "Полный экран",
     [UI_MENU_WINDOW_SIZE] = "Размер окна", [UI_MENU_WINDOW_SIZE_DESC] = "Размер окна игры вне полноэкранного режима.",
     [UI_MENU_WINDOW_SIZE_CUSTOM] = "Другой",
     [UI_MENU_WINDOWED_ONLY] = "Доступно только в оконном режиме",
@@ -337,6 +354,18 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f к/с",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение рендеринга",
+    [UI_MENU_ULTRAWIDE] = "Ультраширокий экран",
+    [UI_MENU_ULTRAWIDE_DESC] = "Расширяет обзор камеры по горизонтали для 21:9 или 32:9. Меню сохраняют пропорции. "
+                              "При выключении используется обзор 16:9. Выбирается разрешение с ближайшей высотой. Требуется перезапуск.",
+    [UI_MENU_WIDE_RES] = "Разрешение отрисовки",
+    [UI_MENU_WIDE_RES_DESC] = "Разрешение игры до масштабирования под окно или экран. Более высокое улучшает "
+                             "детализацию, но требует больше ресурсов GPU и видеопамяти. "
+                             "Ультраширокий режим добавляет варианты 21:9 и 32:9. Требуется перезапуск.",
+    [UI_MENU_HUD_POSITION] = "Положение интерфейса",
+    [UI_MENU_HUD_POSITION_DESC] = "Расположить угловые индикаторы у краёв экрана или в центральной области 16:9. "
+                                 "Меню и прицел остаются в центре. Требуется перезапуск.",
+    [UI_MENU_HUD_EDGES] = "У краёв экрана", [UI_MENU_HUD_CENTERED] = "По центру (16:9)",
+    [UI_MENU_WIDE_DISABLED] = "Сначала включите ультраширокий экран",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
                                 "видеопамяти и времени GPU. Более широкий размер (21:9) расширяет обзор камеры и "
                                 "переносит интерфейс в углы экрана, более высокий (16:10, Steam Deck) переносит его к "
@@ -357,6 +386,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Только для версии игры 1.4.3.",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
+    [UI_MENU_SMAA] = "Сглаживание (SMAA)",
+    [UI_MENU_SMAA_DESC] = "Сглаживает лесенки на готовой картинке после масштабирования под окно и до отрисовки этого "
+                          "меню. Интерфейс игры тоже сглаживается. Чем выше качество, тем больше нагрузка на GPU.",
+    [UI_MENU_SMAA_LOW] = "Низкое", [UI_MENU_SMAA_MEDIUM] = "Среднее", [UI_MENU_SMAA_HIGH] = "Высокое",
     [UI_MENU_COLOR] = "Цвет",
     [UI_MENU_COLOR_PRESET] = "Цветовой профиль",
     [UI_MENU_COLOR_PRESET_DESC] = "Задаёт четыре значения ниже. «Яркий»: больше контраста и насыщенности, тени немного "
@@ -375,6 +408,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_COLOR_GAMMA_DESC] = "Ниже 1 осветляет тёмные и средние тона, выше 1 затемняет их; 1 — без изменений.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
+    [UI_MENU_DKB_FPS_LIMIT_DESC] = "При включённой настройке «Скорость игры по часам» изменения применяются сразу. "
+                                 "Для частоты выше 60 нужны этот экспериментальный режим и достаточная производительность CPU и GPU.",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
                                "игры по часам».",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
@@ -382,6 +417,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_DISPLAY] = "Как у монитора", [UI_MENU_FPS_DISPLAY_HZ] = "Как у монитора (%.0f Гц)",
     [UI_MENU_REALTIME] = "Скорость игры по часам",
     [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
+    [UI_MENU_DKB_REALTIME_DESC] = "Экспериментальный режим, по умолчанию выключен. Шаг игрового времени зависит от длительности кадра. "
+                                "Камера, физика, кат-сцены и звук ещё требуют проверки. Нужен перезапуск.",
     [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
     [UI_MENU_CLOTH_REALTIME_DESC] = "Ткань и волосы тоже идут по реальному времени.",
     [UI_MENU_HIGHFPS_FIX] = "Исправления для высокого FPS",
@@ -398,6 +435,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "может остановиться насовсем.",
 
     [UI_MENU_VOLUME] = "Громкость", [UI_MENU_VOLUME_DESC] = "Общая громкость игры.",
+    [UI_MENU_AUDIO_CHANNELS] = "Динамики",
+    [UI_MENU_AUDIO_CHANNELS_DESC] = "Стерео или объёмный звук 5.1. Автоматически выбирается 5.1, если у устройства "
+                                    "вывода по умолчанию шесть каналов или больше. Применяется после перезапуска.",
+    [UI_MENU_CHANNELS_AUTO] = "Автоматически", [UI_MENU_CHANNELS_STEREO] = "Стерео", [UI_MENU_CHANNELS_51] = "Объёмный 5.1",
 
     [UI_MENU_MOTION] = "Управление движением", [UI_MENU_MOTION_DESC] = "Прицеливание гироскопом контроллера.",
     [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
@@ -476,6 +517,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
 
     [UI_MENU_MENU_LANG] = "Язык меню", [UI_MENU_MENU_LANG_DESC] = "Язык этого меню и индикатора.",
     [UI_MENU_MENU_LANG_AUTO] = "Автоматически (из Windows)",
+    [UI_MENU_THEME] = "Тема меню", [UI_MENU_THEME_DK] = "Donkey Kong", [UI_MENU_THEME_CLASSIC] = "Классическая",
+    [UI_MENU_THEME_DESC] = "Вид этого меню: Donkey Kong (кора и банановый жёлтый) или классический тёмно-зелёный с золотом.",
 
     [UI_MENU_ADV_WARNING] = "Эти настройки нужны для тестов и поиска неполадок. Меняйте их, только если знаете зачем.",
     [UI_MENU_GROUP_SCHED] = "Планирование", [UI_MENU_GROUP_SHADERS] = "Шейдеры и конвейеры",
@@ -519,6 +562,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Заполняет зарезервированный драйвером банк констант c0 (размеры хранилищ, размер запуска, размер точки, базовый экземпляр) вместо чтения нулей.",
     [UI_MENU_FIX_ZERO] = "Обнулять новую память GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Новые пулы памяти GPU заполняются нулями, как память Switch.",
+    [UI_MENU_LIST_RESTART] = "Перезапуск примитивов в списках",
+    [UI_MENU_LIST_RESTART_DESC] = "Применяет перезапуск примитивов игры и к спискам треугольников, как на Switch. Без него индексы перезапуска рисуются как вершины: длинные вытянутые треугольники, например на карте. Нужна видеокарта с primitiveTopologyListRestart.",
     [UI_MENU_BIND_SKIP] = "Пропуск повторных привязок",
     [UI_MENU_BIND_SKIP_DESC] = "Оптимизация: пропускает неизменившиеся привязки.",
     [UI_MENU_SHADER_MEMO] = "Память шейдеров", [UI_MENU_SHADER_MEMO_DESC] = "Оптимизация: запоминает поиск шейдеров.",

@@ -1,28 +1,10 @@
 # Adapted from LAS Recomp tools/nso.py @ da35b83 (MIT, Copyright (c) 2026 Peiikai).
 """NSO loader: decompress segments, build the memory image, parse MOD0/dynamic info."""
-import ctypes
-import os
 import struct
 import sys
 from collections import Counter
 
 import lz4.block
-
-_ZBIC_DLL = None
-
-
-def _zbic_decompress(src, dec_size):
-    global _ZBIC_DLL
-    if _ZBIC_DLL is None:
-        dll_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zbic.dll')
-        _ZBIC_DLL = ctypes.CDLL(dll_path)
-        _ZBIC_DLL.ZSTD_decompress.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t]
-        _ZBIC_DLL.ZSTD_decompress.restype = ctypes.c_size_t
-    dst = ctypes.create_string_buffer(dec_size)
-    res = _ZBIC_DLL.ZSTD_decompress(dst, dec_size, src, len(src))
-    if res != dec_size:
-        raise ValueError(f'ZBIC decompression failed: got {res:#x}, expected {dec_size:#x}')
-    return dst.raw
 
 DT_NULL, DT_NEEDED, DT_PLTRELSZ, DT_HASH, DT_STRTAB, DT_SYMTAB, DT_RELA, DT_RELASZ = 0, 1, 2, 4, 5, 6, 7, 8
 DT_STRSZ, DT_JMPREL, DT_RELACOUNT = 10, 23, 0x6FFFFFF9
@@ -42,10 +24,7 @@ class Nso:
             comp_size = struct.unpack_from('<I', raw, 0x60 + i * 4)[0]
             data = raw[file_off:file_off + comp_size]
             if flags & (1 << i):
-                if flags & 0x80:
-                    data = _zbic_decompress(data, dec_size)
-                else:
-                    data = lz4.block.decompress(data, uncompressed_size=dec_size)
+                data = lz4.block.decompress(data, uncompressed_size=dec_size)
             segs.append((mem_off, data))
         self.bss_size = struct.unpack_from('<I', raw, 0x3C)[0]
         self.text = (segs[0][0], len(segs[0][1]))

@@ -48,8 +48,6 @@ static const uint8_t *image_map;
 static char image_file[2048];
 static char index_dir[2048];         // the directory of romfs-index.bin: the proof file's default place
 static char mount_name[32];
-static char mount_names[8][32];
-static int mount_count;
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint64_t handles[NH];         // file index + 1; 0 is free
 static uint32_t handle_ovl[NH];      // overlay slot + 1 of an open handle, 0 = original
@@ -395,6 +393,18 @@ static void overlay_init(void) {
     int wide = 0;
     unsigned out[2];
     res_wanted(out);
+    // Bananza's edge HUD is a complete overlay, selected at boot just like the
+    // centered layout. Fall back to the centered overlay when it is not installed.
+    if (!patches && !rt_game_version && res_wants_wide_overlay(out) &&
+        !strcmp(cfg_value("TOTK_HUD_POSITION"), "edges")) {
+        if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u-hud-edges/manifest.tsv", index_dir, out[0], out[1]) <
+                (int)sizeof def && plat_file_exists(def)) {
+            def[strlen(def) - strlen("/manifest.tsv")] = 0;
+            patches = def, wide = 1;
+        } else {
+            rt_log("RomFS overlay: edge HUD layout missing for %ux%u; using the centered layout", out[0], out[1]);
+        }
+    }
     if (!patches && res_wants_wide_overlay(out)) {
         if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u/manifest.tsv", index_dir, out[0], out[1]) < (int)sizeof def &&
             plat_file_exists(def)) {
@@ -402,7 +412,8 @@ static void overlay_init(void) {
             patches = def, wide = 1;
         } else {
             rt_log("RomFS overlay: no romfs-patches-%ux%u for this game resolution, the UI keeps its 16:9 layout "
-                   "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
+                   "(tools/%s --aspect %ux%u)", out[0], out[1],
+                   rt_game_version ? "make_romfs_patches.py" : "dkb_wide_layout.py", out[0], out[1]);
         }
     }
     xbox_prompts_ready =
@@ -561,20 +572,9 @@ const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_a
     return overlays[k].name;
 }
 
-static const char *romfs_find_mount(const char *path, size_t *mlen_out) {
-    if (!path) return NULL;
-    for (int i = 0; i < mount_count; i++) {
-        size_t n = strlen(mount_names[i]);
-        if (n && !strncmp(path, mount_names[i], n) && path[n] == ':') {
-            if (mlen_out) *mlen_out = n;
-            return mount_names[i];
-        }
-    }
-    return NULL;
-}
-
 int romfs_owns(const char *path) {
-    return romfs_find_mount(path, NULL) != NULL;
+    size_t n = strlen(mount_name);
+    return n && path && !strncmp(path, mount_name, n) && path[n] == ':';
 }
 
 int romfs_handle(uint64_t h) { return h > ROMFS_HANDLE_BASE && h < ROMFS_HANDLE_BASE + NH; }
@@ -585,11 +585,8 @@ uint32_t romfs_mount(const char *name) {
         strchr(name, ':'))
         return FS_R_INVALID;
     plat_mutex_lock(&lock);
-    if (!*mount_name) strcpy(mount_name, name);
-    int found = 0;
-    for (int i = 0; i < mount_count; i++)
-        if (!strcmp(mount_names[i], name)) found = 1;
-    if (!found && mount_count < 8) strcpy(mount_names[mount_count++], name);
+    if (*mount_name && strcmp(name, mount_name)) rt_fatal("second RomFS mount %s (%s is mounted)", name, mount_name);
+    strcpy(mount_name, name);
     plat_mutex_unlock(&lock);
     rt_log("fs mount %s: -> RomFS", name);
     return 0;
@@ -598,8 +595,7 @@ uint32_t romfs_mount(const char *name) {
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
-    const char *mname = romfs_find_mount(path, NULL);
-    const char *p = mname ? romfs_path_relative(mname, path) : NULL;
+    const char *p = romfs_path_relative(mount_name, path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
@@ -696,8 +692,7 @@ void romfs_close(uint64_t h) {
 
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
-    const char *mname = romfs_find_mount(path, NULL);
-    const char *p = mname ? romfs_path_relative(mname, path) : NULL;
+    const char *p = romfs_path_relative(mount_name, path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     if (file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
@@ -710,50 +705,6 @@ uint32_t romfs_entry_type(int *out, const char *path) {
         return 0;
     }
     return FS_R_PATH_NOT_FOUND;
-}
-
-int romfs_list_dir(const char *path, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx) {
-    size_t mlen = 0;
-    const char *mname = romfs_find_mount(path, &mlen);
-    if (!mname || path[mlen] != ':' || path[mlen + 1] != '/') return PLAT_FS_NOT_FOUND;
-    const char *rel = path + mlen + 2;
-    while (*rel == '/') rel++;
-    char prefix[4096];
-    size_t plen = 0;
-    if (*rel) {
-        if (!romfs_path_valid_relative(rel)) return PLAT_FS_NOT_FOUND;
-        int n = snprintf(prefix, sizeof prefix, "%s/", rel);
-        if (n < 0 || n >= (int)sizeof prefix) return PLAT_FS_NOT_FOUND;
-        plen = (size_t)n;
-        if (!folder_exists(prefix)) return PLAT_FS_NOT_FOUND;
-    } else {
-        prefix[0] = 0;
-    }
-    char last_dir[769] = "";
-    size_t last_dlen = 0;
-    uint64_t i = plen ? lower(prefix) : 0;
-    for (; i < file_count; i++) {
-        Entry e = entry(i);
-        const char *name = entry_name(e);
-        if (plen && strncmp(name, prefix, plen)) break;
-        const char *rest = name + plen;
-        const char *slash = strchr(rest, '/');
-        if (slash) {
-            size_t dlen = (size_t)(slash - rest);
-            if (dlen > 0 && dlen < sizeof last_dir &&
-                (dlen != last_dlen || memcmp(rest, last_dir, dlen))) {
-                memcpy(last_dir, rest, dlen);
-                last_dir[dlen] = 0;
-                last_dlen = dlen;
-                if (!cb(last_dir, PLAT_FS_DIR, 0, ctx)) break;
-            }
-        } else {
-            uint32_t ov = overlay_slot(i);
-            uint64_t sz = ov ? overlays[ov - 1].size : e.size;
-            if (!cb(rest, PLAT_FS_FILE, sz, ctx)) break;
-        }
-    }
-    return PLAT_FS_OK;
 }
 
 // ---- overrides
@@ -772,6 +723,5 @@ static void ov_initialize(Cpu *c) {
 }
 
 HOST_OVERRIDE("_ZN2nn2fs8MountRomEPKcPvm", ov_mount_rom);
-HOST_OVERRIDE("_ZN2nn2fs8MountRomEPKc", ov_mount_rom);
 HOST_OVERRIDE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", ov_query_cache);
 HOST_OVERRIDE("_ZN2nn2fs24InitializeForApplicationEv", ov_initialize);

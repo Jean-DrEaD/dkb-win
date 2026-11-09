@@ -167,9 +167,8 @@ static int pool_gpu_visible(const pool_t *o) { return !(o->flags & NVN_MEMORY_PO
 
 // ---------- Device
 static const int devinfo[] = {   // Tegra X1 values (nnheaders nvn_DeviceConstantsNX.h, measured on SMO)
-    // ABI: Donkey Kong Bananza (NVN 2) requires major 231 and minor >= 16 (main+0x5b29a4, the check before the sead
-    // graphics set-up); OOT (SDK 20.x NVN 2) requires major 231 and minor >= 40 (main+0x340b498); TotK required 55 and >= 15.
-    [0x00] = 231, [0x01] = 40,
+    // Base Bananza requires 231.16 (main+0x5b29a4); the update's gate is handled below. The other limits remain Tegra X1 values.
+    [0x00] = 231, [0x01] = 16,
     [0x02] = 14, [0x03] = 65536, [0x04] = 256, [0x05] = 8, [0x06] = 16, [0x07] = 4, [0x08] = 16, [0x09] = 32,
     [0x0A] = 16, [0x0B] = 4, [0x0C] = 4, [0x0D] = 4, [0x0E] = 16, [0x0F] = 32, [0x10] = 32, [0x11] = 256, [0x12] = 256,
     [0x13] = 4, [0x14] = 8, [0x15] = 512, [0x16] = 256, [0x17] = 2, [0x18] = 256, [0x19] = 4096, [0x1A] = 131072,
@@ -204,13 +203,13 @@ NVN_API(nvnDeviceFinalize) { ((dev_t_ *)arg_p(c, 0))->magic = 0; }
 NVN_API(nvnDeviceGetInteger) {
     unsigned w = (unsigned)arg_x(c, 1);
     int *out = arg_p(c, 2);
-    if (w >= sizeof devinfo / sizeof *devinfo) {   // NVN 2 properties past the NVN 1 table: 0 (feature absent) until known
-        if (w > 0x100) rt_fatal("nvn: unsupported NVN device property %#x", w);
-        rt_log("nvn: NVN 2 device property %#x not known, answering 0", w);
-        *out = 0;
-        return;
-    }
-    *out = devinfo[w];
+    if (w >= sizeof devinfo / sizeof *devinfo) rt_fatal("nvn: unsupported NVN device property %#x", w);
+    // Update 458752's graphics initializer (main+0x5c61ac) rejects the base ABI before creating its device singleton.
+    *out = w == NVN_DEVICE_INFO_API_MINOR_VERSION && !strcmp(rt_game_target, "dkb458752") ? 30 : devinfo[w];
+    // Entries the table leaves at 0 are defaults, not measured values; list each asked enum once.
+    static volatile uint32_t zero_seen[4];
+    if (!devinfo[w] && !(__atomic_fetch_or(&zero_seen[w / 32], 1u << (w % 32), __ATOMIC_RELAXED) & (1u << (w % 32))))
+        rt_log("nvn2: DeviceGetInteger %#x answered with the default 0", w);
     NVN_LOG("DeviceGetInteger %#x -> %d", w, *out);
 }
 // NVNboolean nvnDeviceRegisterFastClearColor{,i,ui}(NVNdevice *d, const T *color, NVNformat format), ...Depth(d, float):
@@ -477,11 +476,6 @@ NVN_API(nvnQueueFenceSync) {
     sync_t *s = arg_p(c, 1);
     s->fenced = 1;
     s->fence = nvn_fence_last();
-}
-// NVNboolean nvnQueueWaitSync(NVNqueue *q, const NVNsync *s): GPU queue ordering is already sequential on the host
-NVN_API(nvnQueueWaitSync) {
-    (void)c;
-    ret_x(c, 1);
 }
 // NVNsyncWaitResult nvnSyncWait(const NVNsync *s, uint64_t timeout_ns): a sync never fenced reports a timeout at once;
 // a fenced one is released only after the back end completed that fence value

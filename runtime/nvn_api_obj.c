@@ -728,11 +728,6 @@ NVN_API(nvnWindowSetCrop) {
 #define VSYNC_HZ 60ull
 static uint64_t present_period(const win_t *o) {
     if (frame_step_realtime()) return frame_step_cap_ns();
-    // EXPERIMENT (set dynfps): pace to every vblank. Holding each frame for the 2 or 3 the game asked for would keep it
-    // at 20-30 fps, since it picks its interval from its own timing (Eglantine-ZendNevs nx2_gsv.h PaceToVblank).
-    static int dynamic = -1;
-    if (dynamic < 0) dynamic = rt_patch_enabled(rt_patch_set("dynfps")) != 0;
-    if (dynamic) return 1000000000ull / VSYNC_HZ;
     return (o->interval > 0 ? (uint64_t)o->interval : 1ull) * 1000000000ull / VSYNC_HZ;
 }
 

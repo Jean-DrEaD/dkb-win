@@ -12,7 +12,8 @@
 // Required (device choice fails without them): Vulkan 1.3; VK_KHR_swapchain, VK_KHR_push_descriptor,
 // VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
 // synchronization2, shaderStorageImageWriteWithoutFormat, depthClipControl, shaderInt64, samplerAnisotropy,
-// independentBlend, geometryShader, textureCompressionBC.
+// independentBlend, textureCompressionBC, and geometryShader where the driver is not a portability implementation
+// (Metal has no geometry stage: vk_device.c accepts the device and the pipelines that need one are skipped).
 // Optional (flag set in VkCtx when enabled): the has_* members.
 typedef struct VkCtx {
     VkInstance instance;
@@ -33,6 +34,11 @@ typedef struct VkCtx {
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
         has_conditional_rendering, has_transform_feedback, has_provoking_vertex, has_device_fault, has_memory_budget,
         has_robustness2, has_buffer_device_address, has_fragment_shader_interlock, has_buffer_marker,
+        has_list_restart,                   // primitiveTopologyListRestart: restart applies to list draws too (vk_exec_draw.c)
+        has_nv_checkpoints,                 // VK_NV_device_diagnostic_checkpoints enabled (DKB_GPU_CHECKPOINTS=1)
+        has_address_binding_report,         // VK_EXT_device_address_binding_report enabled (with the checkpoints, vk_crumbs.c)
+        has_pipeline_exec_info,             // VK_KHR_pipeline_executable_properties enabled (with the checkpoints, vk_crumbs.c)
+        debug_utils,                       // VK_EXT_debug_utils enabled on the instance (validation or the checkpoints)
         has_astc_ldr;                       // textureCompressionASTC_LDR (enabled when reported)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
@@ -54,6 +60,8 @@ typedef struct {
     int gpl;                           // VK_EXT_graphics_pipeline_library enabled with fast linking (TOTK_GPL=0: off)
     int amd;                           // an AMD GPU (vendor 0x1002), any driver
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
+    int moltenvk;                      // the driver is MoltenVK (VK_DRIVER_ID_MOLTENVK)
+    int radv;                          // Mesa's RADV (VK_DRIVER_ID_MESA_RADV)
 } VkCaps;
 extern VkCaps vk_caps;
 void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc
@@ -83,7 +91,23 @@ void vk_crumbs_release(void);
 // Records crumb kind with number n (a timeline value, a batch number; the low 28 bits are kept) into cb. Only the
 // thread that records cb may call it: never into a replay part while the recorder thread owns it (vk_rec.h).
 void vk_crumb(VkCommandBuffer cb, int kind, uint64_t n);
-void vk_crumbs_report(void);         // logs the two codes and what they name
+void vk_crumbs_report(void);         // logs the two codes and what they name, and the NVIDIA checkpoints
+// NVIDIA: with DKB_GPU_CHECKPOINTS=1 and VK_NV_device_diagnostic_checkpoints, vk_checkpoint puts marker into cb (same
+// thread rule as vk_crumb; rec_checkpoint in vk_rec.h for replay parts) and vk_checkpoint_note tells the report which
+// NVN 2 stage names (vertex or compute, geometry, fragment; 0 unknown) the VkPipeline marker holds. All no-ops when off.
+int vk_checkpoints_on(void);
+void vk_checkpoint(VkCommandBuffer cb, const void *marker);
+void vk_checkpoint_note(VkPipeline p, uint64_t vs, uint64_t gs, uint64_t fs);
+// Flags for every graphics pipeline create (and library) so vk_checkpoint_note can log the driver's executables
+// (statistics, ISA) the first time it sees a pipeline; 0 unless the checkpoints and VK_KHR_pipeline_executable_properties are on.
+VkPipelineCreateFlags vk_pipeline_capture_flags(void);
+// Marker for a non-pipeline checkpoint (rec_checkpoint): kind names the command ("dispatch", "copy buffer", ...; a
+// string literal) and, for a dispatch, the compute pipeline last bound by vk_checkpoint_compute on this thread.
+const void *vk_checkpoint_tag(const char *kind);
+void vk_checkpoint_compute(VkPipeline p);
+// With the checkpoints on and VK_EXT_device_address_binding_report: the report also maps each faulting address to the
+// device-address bindings seen so far (vk_crumbs.c). Called by vk_device_fault_report for every address it prints.
+void vk_crumbs_report_address(uint64_t address);
 
 // ---- window and present (gfx_present.c). Host threads only.
 // vk_present_image: blits the crop rectangle {x, y, w, h} of src (NULL, or w/h <= 0: the whole w x h image), scaled
@@ -102,6 +126,10 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, const int out[4]);
 void vk_fsr_release(void);   // before the device goes away
+// SMAA on the present (vk_smaa.c): with TOTK_SMAA = low|medium|high, records SMAA of the rectangle to {x, y, w, h} of the
+// swapchain image dst, which is in TRANSFER_DST and holds the scaled picture, and leaves it there; 0 = nothing recorded.
+int vk_smaa_record(VkCommandBuffer cb, VkImage dst, const int to[4]);
+void vk_smaa_release(void);   // before the device goes away
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
@@ -127,6 +155,7 @@ int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t fam
 void gfx_window_resize(int client_w, int client_h);   // programmatic resize; returns after the swapchain is rebuilt
 void gfx_vsync_bind_counter(volatile int32_t *counter);  // host-side stand-in for a bound event: incremented per tick
 unsigned gfx_window_focus_messages(void);          // OE_MSG_FOCUS_STATE_CHANGED pushes made by the window thread
+void gfx_exit_release(void);                       // before plat_exit, after the saves: drains the present, releases the device; parks if another exit is under way
 void gfx_window_release_vk(void);                  // vk_shutdown calls it first: destroys swapchain, surface, present objects
 long vk_validation_errors_total(void);             // validation errors since the first vk_init, across vk_shutdown
 
@@ -531,7 +560,10 @@ int vk_pipeline_tex_type(int nvn_target);      // NVN_TEXTURE_TARGET_* -> GFX_TE
 uint32_t vk_pipeline_target_wmask(const VkPipeState *s, int i);   // colour write mask of target i the pipeline uses
 VkPrimitiveTopology vk_pipeline_topology(int nvn_prim);   // quads -> triangle list, line loop -> strip: the replay
                                                           // rewrites those draws; polygon -> fan
+int vk_geometry_supported(void);                   // 1: the device has geometryShader (MoltenVK does not)
 uint8_t vk_geometry_input(uint32_t nvn_primitive);    // GFX_GEOMETRY_*; 0 for unsupported/emulated input primitives
+// TOTK_DUMP=key (vk_dump.c): F9 in the game window dumps the frame after next; the window calls this on the key.
+void vk_dump_request(void);
 VkFormat vk_vertex_format(int nvn_format, int *type);     // attribute format (supported fallback), GFX_TYPE_* in *type
 PFN_vkCmdPushDescriptorSetKHR vk_pipeline_push_fn(void);  // after the first vk_pipeline_* call
 // Descriptor update templates (after the first vk_pipeline_* call): NULL when templates are off (TOTK_DESC_TEMPLATE=0,

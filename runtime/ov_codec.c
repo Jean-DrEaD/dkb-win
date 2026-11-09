@@ -9,7 +9,8 @@
 // - it acquires an output buffer before it submits input (its wrapper aborts on any failure there): Acquire reserves
 //   the buffer the next shown picture goes to and returns a fence (NativeSyncHandle, which the caller zeroed; the
 //   host writes a token in its first word); the player waits for it through nn::syncpt::sdk::RequestSyncPointEvent,
-//   signalled when SubmitVp9DecoderInputBuffer has decoded a picture into that buffer (at once if it already has);
+//   signalled when SubmitVp9DecoderInputBuffer has decoded a picture into that buffer (at once if it already has), or
+//   polls it through nn::syncpt::sdk::TryWaitSyncPoint, answered from the same buffer state;
 // - a submission with no reserved buffer to decode into answers "not ready" (the wrapper's retry code 0x76);
 // - the picture is read with ReadDecoderOutputImageNv12 (Y plane, then interleaved UV, each with the caller's pitch).
 //   GetDecoderImagePoolNativeImageHandle (the player's GPU path) has no image yet and returns 0.
@@ -20,7 +21,6 @@
 
 #include <vpx/vp8dx.h>
 #include <vpx/vpx_decoder.h>
-#include <dav1d/dav1d.h>
 
 #include "host.h"
 #include "platform/platform.h"
@@ -52,7 +52,6 @@ typedef struct {
     uint16_t w, h;
     int64_t pts;       // nanoseconds (nn::TimeSpan)
     int eos;
-    int flushed;   // 1: a flush completed this buffer's fence (reported signalled once)
     uint8_t *nv12;     // w*h luma, then cw*ch interleaved UV pairs
 } Slot;
 
@@ -63,8 +62,6 @@ typedef struct {
     uint64_t key;      // guest Vp9DecoderType; 0: unused
     vpx_codec_ctx_t vpx;
     int vpx_ok;
-    int av1;           // 1: AV1 through dav1d (Switch 2 movies); 0: VP9 through libvpx
-    Dav1dContext *dav;
     uint32_t seq;
     Slot slot[SLOTS];
     Slot last;         // the newest picture, for packets that show none
@@ -102,47 +99,6 @@ static void put_picture(Slot *s, const vpx_image_t *img) {
     }
 }
 
-static void queue_drop(Dec *d);
-static void dec_free(Dec *d) {
-    if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
-    if (d->dav) dav1d_close(&d->dav);
-    for (int i = 0; i < SLOTS; i++) free(d->slot[i].nv12);
-    free(d->last.nv12);
-    queue_drop(d);
-    memset(d, 0, sizeof *d);
-}
-
-// Copies a decoded dav1d picture (any layout, 8 to 16 bit) into s as 8-bit NV12.
-static void put_picture_av1(Slot *s, const Dav1dPicture *p) {
-    uint16_t w = (uint16_t)p->p.w, h = (uint16_t)p->p.h;
-    if (!s->nv12 || s->w != w || s->h != h) {
-        free(s->nv12);
-        s->nv12 = malloc((size_t)w * h + 2 * (size_t)cw(w) * ch(h));
-        if (!s->nv12) rt_fatal("codec: out of memory for a %ux%u picture", w, h);
-        s->w = w, s->h = h;
-    }
-    int sh = p->p.bpc > 8 ? p->p.bpc - 8 : 0, wide = p->p.bpc > 8;
-#define PX(pl, st, x, y)                                                                                             \
-    (wide ? (uint8_t)(((const uint16_t *)((const uint8_t *)(p->data[pl]) + (ptrdiff_t)(y) * (st)))[x] >> sh)        \
-          : ((const uint8_t *)(p->data[pl]) + (ptrdiff_t)(y) * (st))[x])
-    ptrdiff_t ys = p->stride[0], cs = p->stride[1];
-    for (uint32_t y = 0; y < h; y++)
-        for (uint32_t x = 0; x < w; x++) s->nv12[(size_t)y * w + x] = PX(0, ys, x, y);
-    uint8_t *uv = s->nv12 + (size_t)w * h;
-    int lay = p->p.layout;   // I400 0, I420 1, I422 2, I444 3
-    for (uint32_t y = 0; y < ch(h); y++)
-        for (uint32_t x = 0; x < cw(w); x++) {
-            uint8_t *o = uv + (size_t)y * 2 * cw(w) + 2 * x;
-            if (lay == DAV1D_PIXEL_LAYOUT_I400) o[0] = o[1] = 128;
-            else {
-                uint32_t sx = lay == DAV1D_PIXEL_LAYOUT_I444 ? 2 * x : x, sy = lay == DAV1D_PIXEL_LAYOUT_I420 ? y : 2 * y;
-                if (sy >= h) sy = h - 1;
-                o[0] = PX(1, cs, sx, sy), o[1] = PX(2, cs, sx, sy);
-            }
-        }
-#undef PX
-}
-
 static void copy_slot(Slot *to, const Slot *from) {
     if (!from->nv12) return;
     size_t n = (size_t)from->w * from->h + 2 * (size_t)cw(from->w) * ch(from->h);
@@ -172,30 +128,6 @@ static Slot *oldest_wait(Dec *d) {
 // signal, stored in wake.
 static int decode_into(Dec *d, Slot *s, const uint8_t *data, size_t size, int64_t pts, int end, uint64_t wake[WAITERS]) {
     const vpx_image_t *img = NULL, *f;
-    Dav1dPicture pic = {0};
-    int have_pic = 0;
-    if (d->av1 && d->dav && data && size) {
-        Dav1dData dd = {0};
-        uint8_t *buf = dav1d_data_create(&dd, size);
-        if (buf) {
-            memcpy(buf, data, size);
-            for (;;) {
-                int r = dav1d_send_data(d->dav, &dd);
-                if (r < 0 && r != DAV1D_ERR(EAGAIN)) {
-                    LOG_FIRST("codec: AV1 packet of %zu bytes failed (%d)", size, r);
-                    break;
-                }
-                Dav1dPicture q = {0};
-                while (dav1d_get_picture(d->dav, &q) == 0) {
-                    if (have_pic) dav1d_picture_unref(&pic);
-                    pic = q, have_pic = 1;
-                    memset(&q, 0, sizeof q);
-                }
-                if (!dd.sz) break;
-            }
-            dav1d_data_unref(&dd);
-        }
-    }
     if (d->vpx_ok && data && size) {
         if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK)
             LOG_FIRST("codec: VP9 packet of %zu bytes failed: %s", size, vpx_codec_error_detail(&d->vpx));
@@ -203,8 +135,7 @@ static int decode_into(Dec *d, Slot *s, const uint8_t *data, size_t size, int64_
         while ((f = vpx_codec_get_frame(&d->vpx, &it))) img = f;   // a superframe shows at most one; keep the last
     }
     int filled = 1;
-    if (have_pic) put_picture_av1(s, &pic), copy_slot(&d->last, s), dav1d_picture_unref(&pic);
-    else if (img) put_picture(s, img), copy_slot(&d->last, s);
+    if (img) put_picture(s, img), copy_slot(&d->last, s);
     else if (end && d->last.nv12) copy_slot(s, &d->last);
     else if (end) {
         vpx_image_t black = {.d_w = 16, .d_h = 16};
@@ -230,58 +161,56 @@ static int decode_into(Dec *d, Slot *s, const uint8_t *data, size_t size, int64_
 static void ov_video_init(Cpu *c) { ret_x(c, 0); }
 static void ov_video_fini(Cpu *c) { ret_x(c, 0); }
 
-static void vp9_init(Cpu *c, uint64_t key, unsigned w, unsigned h, int av1) {
+static void vp9_init(Cpu *c, uint64_t key, unsigned w, unsigned h) {
     plat_mutex_lock(&lock);
     Dec *d = dec_of(key);
     if (!d) d = dec_of(0);
     if (!d) rt_fatal("codec: more than %d VP9 decoders", DECODERS);
-    dec_free(d);
+    if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
+    for (int i = 0; i < SLOTS; i++) free(d->slot[i].nv12);
+    free(d->last.nv12);
+    queue_drop(d);
+    memset(d, 0, sizeof *d);
     d->key = key;
-    d->av1 = av1;
-    int ok;
-    if (av1) {
-        Dav1dSettings st;
-        dav1d_default_settings(&st);
-        st.n_threads = 1, st.max_frame_delay = 1;   // a picture per packet, no frame-thread delay
-        ok = dav1d_open(&d->dav, &st) == 0;
-        if (!ok) d->dav = NULL;
-    } else {
-        vpx_codec_dec_cfg_t cfg = {.threads = 2, .w = w, .h = h};
-        ok = d->vpx_ok = vpx_codec_dec_init(&d->vpx, vpx_codec_vp9_dx(), &cfg, 0) == VPX_CODEC_OK;
-    }
+    vpx_codec_dec_cfg_t cfg = {.threads = 2, .w = w, .h = h};
+    d->vpx_ok = vpx_codec_dec_init(&d->vpx, vpx_codec_vp9_dx(), &cfg, 0) == VPX_CODEC_OK;
     plat_mutex_unlock(&lock);
-    rt_log("codec: %s decoder %#llx %ux%u on the host (%s%s)", av1 ? "AV1" : "VP9", (unsigned long long)key, w, h,
-           av1 ? "dav1d" : "libvpx", ok ? "" : " failed to start: pictures stay black");
+    rt_log("codec: VP9 decoder %#llx %ux%u on the host (libvpx%s)", (unsigned long long)key, w, h,
+           d->vpx_ok ? "" : " failed to start: pictures stay black");
     ret_x(c, 0);
 }
 // Result InitializeVp9Decoder(Vp9DecoderType *, void *work, size_t, size_t, u16 w, u16 h, u32, input, output fmt)
-static void ov_vp9_init(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 0); }
-// Result Initialize{Vp9,Av1}DecoderByTransferMemory(Type *, void *work, size_t, size_t, u16 w, u16 h, u32, in, out, mode)
-static void ov_vp9_init_tm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 0); }
-static void ov_av1_init_tm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 1); }
-// Result Initialize{Vp9,Av1}DecoderByRemoteMemory(Type *, size_t, u16 w, u16 h, u32, in, out, mode)
-static void ov_vp9_init_rm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 0); }
-static void ov_av1_init_rm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 1); }
+static void ov_vp9_init(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff); }
 // Result InitializeVp9Decoder(Vp9DecoderType *, size_t, size_t, u16 w, u16 h, u32, input, output fmt)
-static void ov_vp9_init_nowork(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 3) & 0xffff, arg_x(c, 4) & 0xffff, 0); }
+static void ov_vp9_init_nowork(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 3) & 0xffff, arg_x(c, 4) & 0xffff); }
+static void ov_vp9_init_nowork_update(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff); }
 
 // Result FinalizeVp9Decoder(Vp9DecoderType *)
 static void ov_vp9_fini(Cpu *c) {
     plat_mutex_lock(&lock);
     Dec *d = dec_of(arg_x(c, 0));
-    if (d) dec_free(d);
+    if (d) {
+        if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
+        for (int i = 0; i < SLOTS; i++) free(d->slot[i].nv12);
+        free(d->last.nv12);
+        queue_drop(d);
+        memset(d, 0, sizeof *d);
+    }
     plat_mutex_unlock(&lock);
     ret_x(c, 0);
 }
 
-// Result FlushVp9Decoder(Vp9DecoderType *): outputs not handed over yet are dropped
+// Result FlushVp9Decoder(Vp9DecoderType *): packets not decoded yet are dropped. A picture already decoded into a
+// reserved buffer stays: the player was told its fence is signalled (RequestSyncPointEvent), and withdrawing it would
+// leave that fence unsatisfiable, as the picture is gone and no packet is left to decode another one.
 static void ov_vp9_flush(Cpu *c) {
     plat_mutex_lock(&lock);
     Dec *d = dec_of(arg_x(c, 0));
-    if (d)
+    // The base build keeps the old rule (a decoded picture is dropped); only the update reserves it.
+    if (d && strcmp(rt_game_target, "dkb458752"))
         for (int i = 0; i < SLOTS; i++)
-            if (d->slot[i].state == S_FILLED || d->slot[i].state == S_WAIT) d->slot[i].state = S_WAIT, d->slot[i].flushed = 1;   // still reserved; picture dropped, its fence completes
-    if (d) queue_drop(d);   // and so are the packets not decoded yet
+            if (d->slot[i].state == S_FILLED) d->slot[i].state = S_WAIT;
+    if (d) queue_drop(d);   // the packets not decoded yet
     plat_mutex_unlock(&lock);
     TRACE("flush");
     ret_x(c, 0);
@@ -441,12 +370,9 @@ static void ov_vp9_release(Cpu *c) {
     ret_x(c, 0);
 }
 
-// Result GetVp9DecoderOutputBufferProperties(u16 *w, u16 *h, u16 *, u16 *, nn::movie::ColorSpace *, TimeSpan *pts,
-// bool *end, Vp9DecoderType *, u32 index). The two unnamed u16 get the picture size too (aligned or display size).
-static void ov_vp9_props(Cpu *c) {
-    uint32_t i = (uint32_t)arg_x(c, 8);
+static void vp9_props(Cpu *c, uint64_t key, uint32_t i, int64_t *pts, uint8_t *end) {
     plat_mutex_lock(&lock);
-    Dec *d = dec_of(arg_x(c, 7));
+    Dec *d = dec_of(key);
     Slot s = d && i < SLOTS ? d->slot[i] : (Slot){0};
     plat_mutex_unlock(&lock);
     for (int k = 0; k < 4; k++) {
@@ -454,10 +380,19 @@ static void ov_vp9_props(Cpu *c) {
         if (p) *p = k & 1 ? s.h : s.w;
     }
     LOG_FIRST("codec: output properties: %ux%u", s.w, s.h);
-    if (arg_p(c, 4)) *(uint32_t *)arg_p(c, 4) = 0;
-    if (arg_p(c, 5)) *(int64_t *)arg_p(c, 5) = s.pts;
-    if (arg_p(c, 6)) *(uint8_t *)arg_p(c, 6) = (uint8_t)s.eos;
+    if (pts) *pts = s.pts;
+    if (end) *end = (uint8_t)s.eos;
     ret_x(c, d ? 0 : R_NOT_READY);
+}
+
+static void ov_vp9_props(Cpu *c) {
+    if (arg_p(c, 4)) *(uint32_t *)arg_p(c, 4) = 0;
+    vp9_props(c, arg_x(c, 7), (uint32_t)arg_x(c, 8), arg_p(c, 5), arg_p(c, 6));
+}
+
+// The newer ABI omits ColorSpace, moving the decoder and index back into x6/x7 instead of x7/the stack.
+static void ov_vp9_props_update(Cpu *c) {
+    vp9_props(c, arg_x(c, 6), (uint32_t)arg_x(c, 7), arg_p(c, 4), arg_p(c, 5));
 }
 
 // Result ReadDecoderOutputImageNv12(const VideoDecoderImagePoolType *, u32 image, u16 x, u16 y, u16 w, u16 h,
@@ -551,6 +486,22 @@ static void ov_sp_request(Cpu *c) {
     TRACE("sync point request %#x: %s", tok, now ? "signalled at once" : "waits for its picture");
     if (now) kern_signal_system_event(ev);
 }
+// bool TryWaitSyncPoint(const SyncPointHandle &): the poll form of the request above, which the guide-movie player
+// reaches through nn::gs::TryWaitNativeSync when it advances its queue of shown pictures. Eglantine
+// (its nvdrv syncpoint code, the NativeSyncHandle handling) has a NativeSyncHandle carry the sync point and the value
+// its frame is finished at; the host has no sync point, so a decoder fence answers from its own buffer and anything else at once.
+static void ov_sp_trywait_point(Cpu *c) {
+    const uint32_t *h = arg_p(c, 0);
+    uint32_t tok = h ? *h : 0;
+    int now = 1;
+    if ((tok & 0xffff0000u) == FENCE_TAG && (tok >> 8 & 0xff) < DECODERS && (tok & 0xff) < SLOTS) {
+        plat_mutex_lock(&lock);
+        now = decs[tok >> 8 & 0xff].slot[tok & 0xff].state != S_WAIT;   // the rule of RequestSyncPointEvent
+        plat_mutex_unlock(&lock);
+    }
+    TRACE("sync point try wait %#x: %s", tok, now ? "signalled" : "waits for its picture");
+    ret_x(c, now);
+}
 // void CancelSyncPointEvent(SyncPointEventType *): the request is dropped and the event cleared
 static void ov_sp_cancel(Cpu *c) {
     uint64_t ev = event_for(c, arg_x(c, 0));
@@ -571,6 +522,8 @@ HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEPvmmttjN
               "24VideoDecoderOutputFormatE", ov_vp9_init);
 HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_"
               "24VideoDecoderOutputFormatE", ov_vp9_init_nowork);
+HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_"
+              "24VideoDecoderOutputFormatE", ov_vp9_init_nowork_update);
 HOST_OVERRIDE("_ZN2nn5codec18FinalizeVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_vp9_fini);
 HOST_OVERRIDE("_ZN2nn5codec15StartVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_ok);
 HOST_OVERRIDE("_ZN2nn5codec14StopVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_ok);
@@ -591,104 +544,16 @@ HOST_OVERRIDE("_ZN2nn5codec29ReleaseVp9DecoderOutputBufferEPNS0_14Vp9DecoderType
               ov_vp9_release);
 HOST_OVERRIDE("_ZN2nn5codec35GetVp9DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_5movie10ColorSpaceEPNS_8TimeSpanEPbPNS0_"
               "14Vp9DecoderTypeEj", ov_vp9_props);
+HOST_OVERRIDE("_ZN2nn5codec35GetVp9DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Vp9DecoderTypeEj",
+              ov_vp9_props_update);
 HOST_OVERRIDE("_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoolTypeEjttttPvmmS4_mm", ov_read_nv12);
 HOST_OVERRIDE("_ZN2nn5codec36GetDecoderImagePoolNativeImageHandleEPKNS0_25VideoDecoderImagePoolTypeEj", ov_pool_image);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk20CreateSyncPointEventEPNS1_18SyncPointEventTypeE", ov_sp_create);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk25InitializeMultiWaitHolderEPNS_2os19MultiWaitHolderTypeEPNS1_18SyncPointEventTypeE",
               ov_sp_holder);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk21TryWaitSyncPointEventEPKNS1_18SyncPointEventTypeE", ov_sp_trywait);
+HOST_OVERRIDE("_ZN2nn6syncpt3sdk16TryWaitSyncPointERKNS1_15SyncPointHandleE", ov_sp_trywait_point);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk21RequestSyncPointEventEPNS1_18SyncPointEventTypeERKNS1_15SyncPointHandleE",
               ov_sp_request);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk20CancelSyncPointEventEPNS1_18SyncPointEventTypeE", ov_sp_cancel);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk21DestroySyncPointEventEPNS1_18SyncPointEventTypeE", ov_sp_nop);
-// SyncPointHandle waits (3.2.0 SDK, VP9 path): the host has no sync point, every handle is already signalled
-// void WaitSyncPoint(const SyncPointHandle &) / Result TimedWaitSyncPoint(const SyncPointHandle &, TimeSpan)
-// -1: not a decoder fence (signalled); otherwise the state of the fence's buffer
-static int fence_state(const uint32_t *h) {
-    uint32_t tok = h ? *h : 0;
-    if ((tok & 0xffff0000u) != FENCE_TAG || (tok >> 8 & 0xff) >= DECODERS || (tok & 0xff) >= SLOTS) return -1;
-    plat_mutex_lock(&lock);
-    Slot *sl = &decs[tok >> 8 & 0xff].slot[tok & 0xff];
-    int st = sl->state;
-    if (sl->flushed) { sl->flushed = 0; st = -1; }   // flush completes the pending fence
-    plat_mutex_unlock(&lock);
-    return st;
-}
-static void ov_sp_wait_ok(Cpu *c) {
-    int st = fence_state(arg_p(c, 0));
-    TRACE("wait sync point: state %d", st);
-    ret_x(c, 0);
-}
-// Result TimedWaitSyncPoint: a decoder fence without its picture times out (try again)
-static void ov_sp_timedwait(Cpu *c) {
-    int st = fence_state(arg_p(c, 0));
-    TRACE("timedwait sync point: state %d", st);
-    ret_x(c, st == S_WAIT ? R_NOT_READY : 0);
-}
-// bool TryWaitSyncPoint(const SyncPointHandle &)
-static void ov_sp_trywait_ok(Cpu *c) {
-    int st = fence_state(arg_p(c, 0));
-    TRACE("trywait sync point: state %d", st);
-    ret_x(c, st != S_WAIT);
-}
-HOST_OVERRIDE("_ZN2nn6syncpt3sdk13WaitSyncPointERKNS1_15SyncPointHandleE", ov_sp_wait_ok);
-HOST_OVERRIDE("_ZN2nn6syncpt3sdk16TryWaitSyncPointERKNS1_15SyncPointHandleE", ov_sp_trywait_ok);
-HOST_OVERRIDE("_ZN2nn6syncpt3sdk18TimedWaitSyncPointERKNS1_15SyncPointHandleENS_8TimeSpanE", ov_sp_timedwait);
-// Result Get{Vp9,Av1}DecoderOutputBufferProperties(u16 *w, u16 *h, u16 *, u16 *, TimeSpan *pts, bool *end, Type *, u32 index)
-// (Switch 2 SDK 20: no ColorSpace argument)
-static void ov_props2(Cpu *c) {
-    uint32_t i = (uint32_t)arg_x(c, 7);
-    plat_mutex_lock(&lock);
-    Dec *d = dec_of(arg_x(c, 6));
-    Slot s = d && i < SLOTS ? d->slot[i] : (Slot){0};
-    plat_mutex_unlock(&lock);
-    for (int k = 0; k < 4; k++) {
-        uint16_t *p = arg_p(c, k);
-        if (p) *p = k & 1 ? s.h : s.w;
-    }
-    LOG_FIRST("codec: output properties: %ux%u", s.w, s.h);
-    if (arg_p(c, 4)) *(int64_t *)arg_p(c, 4) = s.pts;
-    if (arg_p(c, 5)) *(uint8_t *)arg_p(c, 5) = (uint8_t)s.eos;
-    ret_x(c, d ? 0 : R_NOT_READY);
-}
-// SystemEventType *Get{Vp9,Av1}DecoderSubmissionReadyEvent(Type *)
-static void ov_ready2(Cpu *c) {
-    uint64_t ev = event_for(c, arg_x(c, 0));
-    kern_signal_system_event(ev);
-    ret_x(c, ev);
-}
-// Result UnregisterXxxDecoderBuffer(Type *, u32 index)
-static void ov_unregister(Cpu *c) {
-    uint32_t i = (uint32_t)arg_x(c, 1);
-    plat_mutex_lock(&lock);
-    Dec *d = dec_of(arg_x(c, 0));
-    if (d && i < SLOTS) d->slot[i].pool = 0, d->slot[i].state = S_FREE;
-    plat_mutex_unlock(&lock);
-    ret_x(c, 0);
-}
-
-#define CODEC_SDK20(K, INIT_TM, INIT_RM)                                                                             \
-    HOST_OVERRIDE("_ZN2nn5codec36Initialize" K "DecoderByTransferMemoryEPNS0_14" K "DecoderTypeEPvmmttjNS0_23"       \
-                  "VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", INIT_TM);   \
-    HOST_OVERRIDE("_ZN2nn5codec34Initialize" K "DecoderByRemoteMemoryEPNS0_14" K "DecoderTypeEmttjNS0_23"            \
-                  "VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", INIT_RM);   \
-    HOST_OVERRIDE("_ZN2nn5codec18Finalize" K "DecoderEPNS0_14" K "DecoderTypeE", ov_vp9_fini);                       \
-    HOST_OVERRIDE("_ZN2nn5codec15Start" K "DecoderEPNS0_14" K "DecoderTypeE", ov_ok);                                \
-    HOST_OVERRIDE("_ZN2nn5codec14Stop" K "DecoderEPNS0_14" K "DecoderTypeE", ov_ok);                                 \
-    HOST_OVERRIDE("_ZN2nn5codec15Flush" K "DecoderEPNS0_14" K "DecoderTypeE", ov_vp9_flush);                         \
-    HOST_OVERRIDE("_ZN2nn5codec24Register" K "DecoderBufferEPNS0_14" K "DecoderTypeEjPNS0_25VideoDecoderImagePoolTypeEj", \
-                  ov_vp9_register);                                                                                  \
-    HOST_OVERRIDE("_ZN2nn5codec26Unregister" K "DecoderBufferEPNS0_14" K "DecoderTypeEj", ov_unregister);            \
-    HOST_OVERRIDE("_ZN2nn5codec33Get" K "DecoderSubmissionReadyEventEPNS0_14" K "DecoderTypeE", ov_ready2);          \
-    HOST_OVERRIDE("_ZN2nn5codec27Submit" K "DecoderInputBufferEPmPNS0_14" K "DecoderTypeEPKvmNS_8TimeSpanEb",        \
-                  ov_vp9_submit);                                                                                    \
-    HOST_OVERRIDE("_ZN2nn5codec29Acquire" K "DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_14" K "DecoderTypeE", \
-                  ov_vp9_acquire);                                                                                   \
-    HOST_OVERRIDE("_ZN2nn5codec29Release" K "DecoderOutputBufferEPNS0_14" K "DecoderTypeEjNS_2gs16NativeSyncHandleE", \
-                  ov_vp9_release);                                                                                   \
-    HOST_OVERRIDE("_ZN2nn5codec35Get" K "DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14" K        \
-                  "DecoderTypeEj", ov_props2)
-CODEC_SDK20("Av1", ov_av1_init_tm, ov_av1_init_rm);
-CODEC_SDK20("Vp9", ov_vp9_init_tm, ov_vp9_init_rm);
-// SDK 20 pool calls carry no CodecMode
-HOST_OVERRIDE("_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEj", ov_pool_init);

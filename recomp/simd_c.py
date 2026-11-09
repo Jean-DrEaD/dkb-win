@@ -174,10 +174,6 @@ class SimdC:
                 return self.shift_imm(w)
             if (op1 & 2) and not (op3 & 1):
                 return self.indexed(w)
-            if (w & 0x9F20FC00) == 0x0E009400:
-                return self.dot(w)
-            if (w & 0xBFF8FC00) == 0x2EF8F800:
-                return self.frsqrte_h(w)
             raise Unsupported(f'simd vector {w:08x}')
         if (op0 & 0b0101) == 0b0001:  # scalar FP
             if bits(w, 29, 1) or (bits(w, 31, 1) and (op1 & 2 or (op2 & 4 and op3 & 0b111111))):
@@ -326,12 +322,6 @@ class SimdC:
         if bits(w, 22, 2):
             raise Unsupported('tbl op2')
         return f'sv_tbl(c, {Q}, {ln}, {op}, {d}, {n}, {m});'
-
-    def dot(self, w):
-        Q, U, sz, m, n, d = bits(w, 30, 1), bits(w, 29, 1), bits(w, 22, 2), bits(w, 16, 5), bits(w, 5, 5), bits(w, 0, 5)
-        if sz != 2:
-            raise Unsupported('dot size')
-        return f'sv_dot(c, {Q}, {U}, {d}, {n}, {m});'
 
     # ------------------------------------------------------------ three same
 
@@ -736,17 +726,6 @@ class SimdC:
             imm = ~imm & ((1 << 64) - 1)
         v = imm | (imm << 64) if Q else imm
         return f'c->v[{d}] = {u128(v)};'
-
-    def modimm_b(self, w):
-        Q, d = bits(w, 30, 1), bits(w, 0, 5)
-        imm8 = (bits(w, 16, 3) << 5) | bits(w, 5, 5)
-        imm = sum(imm8 << s for s in range(0, 64, 8))
-        v = imm | (imm << 64) if Q else imm
-        return f'c->v[{d}] = {u128(v)};'
-
-    def frsqrte_h(self, w):
-        Q, n, d = bits(w, 30, 1), bits(w, 5, 5), bits(w, 0, 5)
-        return VWr('vu16', Q, d, f'vfromint_h_rsqrte(c, {VQ("vu16", Q, n)})')
 
     # ------------------------------------------------------------ shift by immediate
 

@@ -704,8 +704,6 @@ class Lifter:
                 gprs = [(p, r) for p, r in ((0, rd), (5, rn), (16, rm)) if r != 31]
                 return Insn('asm', asm=AsmInsn(w, set(), gprs))
             a, b = R(sf, rn), R(sf, rm)
-            if sf and opcode == 12:  # PACGA (ARMv8.3): no pointer signing on host, return 0
-                return Insn('op', set_reg(1, rd, '0ull'))
             expr = {
                 2: f'udiv{size}({a}, {b})',
                 3: f'sdiv{size}({a}, {b})',
