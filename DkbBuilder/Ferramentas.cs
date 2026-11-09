@@ -185,7 +185,7 @@ sealed class Runner
                 if ((exefs == null || romfs == null) && nup != null)
                 {
                     var sc = Path.Combine(t.Src, "tools", "extract_nup.py");
-                    var ext = Path.Combine(dest, "_nup");
+                    var ext = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dest)) + "_nup";   // fora do destino (lift recusa overlap)
                     L("== Extraindo o .nup (base + update) ==");
                     if (await Ferramentas.Run(t.Python, new[] { sc, nup, "--out", ext, "--overlay-update" }, t.Src, t, L, cts.Token, p => proc = p) != 0)
                     { Finished?.Invoke("Nao foi possivel extrair o .nup. Clique em 'Show details'."); return; }
