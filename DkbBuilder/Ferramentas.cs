@@ -9,7 +9,7 @@ namespace DkbBuilder;
 
 sealed class Tools
 {
-    public const string Tag = "v0.3.5";
+    public const string Tag = "v0.3.6";
     public string Version => Tag;
     public string Root = "";
     public string Dir => Path.Combine(Root, "tools");
@@ -30,6 +30,7 @@ static class Ferramentas
     static readonly string[] Pkgs = { "clang", "lld", "sdl3", "opus", "zstd", "ninja", "vulkan-headers", "vulkan-loader", "pkgconf" };
 
     static readonly HttpClient Http = MakeHttp();
+    public static bool Ready(Tools t) { var f = Path.Combine(t.Dir, ".ready"); return File.Exists(f) && File.ReadAllText(f).Trim() == Tools.Tag; }
     static HttpClient MakeHttp() { var h = new HttpClient { Timeout = Timeout.InfiniteTimeSpan }; h.DefaultRequestHeaders.UserAgent.ParseAdd("DkbBuilder"); return h; }
 
     public static async Task Prepare(Tools t, Action<string> log, CancellationToken ct)
@@ -37,7 +38,7 @@ static class Ferramentas
         Directory.CreateDirectory(t.Dir);
         var tmp = Path.Combine(t.Dir, "_downloads"); Directory.CreateDirectory(tmp);
 
-        if (!File.Exists(t.Src + "\\.ok"))
+        if (!File.Exists(t.Src + "\\.ok") || File.ReadAllText(t.Src + "\\.ok").Trim() != Tools.Tag)
         {
             log("== Codigo-fonte " + Tools.Tag + " ==");
             string url;
@@ -49,7 +50,7 @@ static class Ferramentas
             var inner = Directory.GetDirectories(part).First();
             if (Directory.Exists(t.Src)) Directory.Delete(t.Src, true);
             Directory.Move(inner, t.Src); Directory.Delete(part, true);
-            File.WriteAllText(t.Src + "\\.ok", Tools.Tag);
+            File.WriteAllText(t.Src + "\\.ok", Tools.Tag); File.Delete(Path.Combine(Path.GetDirectoryName(t.Python)!, ".pip-ok"));
         }
 
         var pyDir = Path.GetDirectoryName(t.Python)!;
@@ -72,6 +73,7 @@ static class Ferramentas
                 var f = Path.Combine(t.Src, r);
                 if (File.Exists(f) && await Run(t.Python, new[] { "-m", "pip", "install", "-q", "-r", f }, t.Src, t, log, ct) != 0) throw new Exception("pip falhou em " + r);
             }
+            if (await Run(t.Python, new[] { "-m", "pip", "install", "-q", "zstandard" }, t.Src, t, log, ct) != 0) throw new Exception("pip falhou em zstandard");
             File.WriteAllText(pyDir + "\\.pip-ok", "");
         }
 
@@ -104,7 +106,7 @@ static class Ferramentas
         }
         try { Directory.Delete(tmp, true); } catch { }
         if (t.Root.Any(c => c > 126)) log("[AVISO] Pasta com acento/caractere especial: prefira C:\\DKB");
-        log("Ferramentas prontas.");
+        File.WriteAllText(Path.Combine(t.Dir, ".ready"), Tools.Tag); log("Ferramentas prontas.");
     }
 
     static async Task Download(string url, string to, Action<string> log, CancellationToken ct)
@@ -208,6 +210,7 @@ sealed class Runner
         try { code = await Ferramentas.Run(t.Python, new[] { sc, a[i + 1], "--list" }, t.Src, t, x => { lock (lines) lines.Add(x); }, CancellationToken.None); }
         catch (Exception e) { return (false, e.Message); }
         var all = string.Join("\n", lines);
+        try { File.AppendAllText(Path.Combine(t.Dir, "check.log"), "== " + a[i + 1] + " (codigo " + code + ")\n" + all + "\n"); } catch { }
         if (code != 0) return (false, lines.LastOrDefault() ?? "O .nup nao pode ser lido.");
         if (all.IndexOf("74a01bf1", StringComparison.OrdinalIgnoreCase) < 0 && all.IndexOf("bananza", StringComparison.OrdinalIgnoreCase) < 0)
             return (false, "This is build of another game (nao e o Donkey Kong Bananza).");

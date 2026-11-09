@@ -84,3 +84,6 @@ desktop.ini
 backup/
 .portable/
 tools/
+
+bin/
+obj/

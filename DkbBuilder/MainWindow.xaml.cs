@@ -256,6 +256,15 @@ public partial class MainWindow : Window
         if (checking) return;
         checking = true;
         var tools = Tools.Find(); if (tools == null) { checking = false; ShowProblem("The DKB tools were not found next to this app.", tools: true); return; }
+        if (!Ferramentas.Ready(tools))
+        {
+            System.IO.Directory.CreateDirectory(tools.Dir);
+            var logf = System.IO.Path.Combine(tools.Dir, "setup.log");
+            var oldTitle = Title; Title = "DKB - baixando ferramentas em tools\\ (uma vez só)…";
+            try { await Task.Run(() => Ferramentas.Prepare(tools, s => { try { System.IO.File.AppendAllText(logf, s + "\n"); } catch { } }, CancellationToken.None)); }
+            catch (Exception e) { checking = false; Title = oldTitle; ShowProblem("Falha ao baixar as ferramentas: " + e.Message + " (veja tools\\setup.log)", tools: true); return; }
+            Title = oldTitle;
+        }
         while (tools != null && dumps.FirstOrDefault(d => !checks.ContainsKey(d.Path)) is { } d)
         {
             checks[d.Path] = null;
