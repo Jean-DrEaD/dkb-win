@@ -25,7 +25,7 @@ static class Ferramentas
 {
     const string PyUrl = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.12.7+20241016-x86_64-pc-windows-msvc-install_only.tar.gz";
     const string MsysUrl = "https://github.com/msys2/msys2-installer/releases/latest/download/msys2-base-x86_64-latest.sfx.exe";
-    const string NetUrl = "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.427/dotnet-sdk-8.0.427-win-x64.zip";
+    const string NetUrl = "https://aka.ms/dotnet/10.0/dotnet-sdk-win-x64.zip";
     const string RelApi = "https://api.github.com/repos/Jean-DrEaD/dkb-win/releases/tags/" + Tools.Tag;
     static readonly string[] Pkgs = { "clang", "lld", "sdl3", "opus", "zstd", "ninja", "vulkan-headers", "vulkan-loader", "pkgconf" };
 
@@ -116,9 +116,10 @@ static class Ferramentas
         var miss = need.Where(n => !File.Exists(Path.Combine(t.Clang, n))).ToList();
         if (miss.Count > 0) throw new Exception("Ainda faltam (antivirus?): " + string.Join(", ", miss));
 
-        if (!File.Exists(t.Dotnet))
+        var sdkDir = Path.Combine(Path.GetDirectoryName(t.Dotnet)!, "sdk");
+        if (!File.Exists(t.Dotnet) || !Directory.Exists(sdkDir) || !Directory.EnumerateDirectories(sdkDir, "10.*").Any())
         {
-            log("== .NET SDK 8 (portatil) ==");
+            log("== .NET SDK 10 (portatil) ==");
             var zip = Path.Combine(tmp, "dotnet.zip");
             await Download(NetUrl, zip, log, ct);
             ZipFile.ExtractToDirectory(zip, Path.GetDirectoryName(t.Dotnet)!, true);
