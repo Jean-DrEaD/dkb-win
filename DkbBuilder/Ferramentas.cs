@@ -27,7 +27,7 @@ static class Ferramentas
     const string MsysUrl = "https://github.com/msys2/msys2-installer/releases/latest/download/msys2-base-x86_64-latest.sfx.exe";
     const string NetUrl = "https://aka.ms/dotnet/10.0/dotnet-sdk-win-x64.zip";
     const string RelApi = "https://api.github.com/repos/Jean-DrEaD/dkb-win/releases/tags/" + Tools.Tag;
-    static readonly string[] Pkgs = { "clang", "lld", "sdl3", "opus", "zstd", "ninja", "vulkan-headers", "vulkan-loader", "pkgconf" };
+    static readonly string[] Pkgs = { "vulkan-memory-allocator", "clang", "lld", "sdl3", "opus", "zstd", "ninja", "vulkan-headers", "vulkan-loader", "pkgconf" };
 
     static readonly HttpClient Http = MakeHttp();
     public static bool Ready(Tools t) { var f = Path.Combine(t.Dir, ".ready"); return File.Exists(f) && File.ReadAllText(f).Trim() == Tools.Tag; }
