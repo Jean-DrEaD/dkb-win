@@ -194,7 +194,7 @@ sealed class Runner
                     if (idx != null)
                     {
                         L("== Extraindo a DLC ==");
-                        if (await Ferramentas.Run(t.Python, new[] { sc, nup, "--package", idx, "--only", "romfs", "--out", Path.Combine(dest, "dlc") }, t.Src, t, L, cts.Token, p => proc = p) != 0)
+                        if (await Ferramentas.Run(t.Python, new[] { sc, nup, "--package", idx, "--only", "romfs", "--out", Path.Combine(ext, "dlc") }, t.Src, t, L, cts.Token, p => proc = p) != 0)
                             L("[AVISO] DLC nao extraida; o jogo segue sem ela.");
                     }
                 }
@@ -211,6 +211,14 @@ sealed class Runner
             }, cts.Token, p => proc = p);
             if (code != 0) { Finished?.Invoke($"O build falhou (codigo {code}). Clique em 'Show details'."); return; }
             L("@@stage finish");
+            var dlcTmp = Path.Combine(Path.TrimEndingDirectorySeparator(Path.GetFullPath(dest)) + "_nup", "dlc");
+            var dlcDst = Path.Combine(dest, "dlc");
+            if (Directory.Exists(dlcTmp))
+            {
+                if (Directory.Exists(dlcDst)) Directory.Delete(dlcDst, true);
+                Directory.Move(dlcTmp, dlcDst);
+                L("DLC movida para " + dlcDst);
+            }
             L("@@done " + dest);
             Finished?.Invoke(null);
         }
