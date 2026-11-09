@@ -627,7 +627,7 @@ public partial class MainWindow : Window
         ProblemSub.Text = updating ? "Your current game is unchanged and still plays." : "Nothing was changed in your game folder.";
         if (tools)
         {
-            ProblemTitle.Text = "The build tools need repairing";
+            ProblemTitle.Text = why.Contains("antivirus", StringComparison.OrdinalIgnoreCase) ? "The build tools need repairing" : "The build tools are not ready";
             var av = why.Contains("antivirus", StringComparison.OrdinalIgnoreCase);
             ProblemHead.Text = av ? "Your antivirus removed part of the build tools" : "Could not download the build tools";
             ProblemText.Text = why + (av ? "\n\nAntivirus programs sometimes flag unsigned developer tools by mistake." : "\n\nCheck your internet connection, then press Repair to try again.");

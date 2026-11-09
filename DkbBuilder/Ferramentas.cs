@@ -51,7 +51,7 @@ static class Ferramentas
             var inner = Directory.GetDirectories(part).First();
             if (Directory.Exists(t.Src)) Directory.Delete(t.Src, true);
             Directory.Move(inner, t.Src); Directory.Delete(part, true);
-            File.WriteAllText(t.Src + "\\.ok", got); File.Delete(Path.Combine(Path.GetDirectoryName(t.Python)!, ".pip-ok"));
+            File.WriteAllText(t.Src + "\\.ok", got); { var pipOk = Path.Combine(Path.GetDirectoryName(t.Python)!, ".pip-ok"); if (File.Exists(pipOk)) File.Delete(pipOk); }
         }
 
         var pyDir = Path.GetDirectoryName(t.Python)!;
