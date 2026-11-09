@@ -67,10 +67,11 @@ static class Ferramentas
         {
             log("== Python 3.12 (portatil) ==");
             var gz = Path.Combine(tmp, "python.tar.gz");
-            await Download(PyUrl, gz, log, ct);
+            if (!File.Exists(gz) || new FileInfo(gz).Length < 30_000_000) await Download(PyUrl, gz, log, ct);
             if (Directory.Exists(pyDir)) Directory.Delete(pyDir, true);
-            await using (var f = File.OpenRead(gz)) await using (var z = new GZipStream(f, CompressionMode.Decompress))
-                await TarFile.ExtractToDirectoryAsync(z, t.Dir, true, ct);   // cria tools\python
+            var tarExe = Path.Combine(Environment.SystemDirectory, "tar.exe");
+            if (await Run(tarExe, new[] { "-xzf", gz, "-C", t.Dir }, t.Dir, t, log, ct) != 0) throw new Exception("tar falhou ao extrair o Python");
+                   // cria tools\python
             if (!File.Exists(t.Python)) throw new FileNotFoundException("python.exe sumiu (antivirus?)");
             File.WriteAllText(pyDir + "\\.ok", "");
         }
