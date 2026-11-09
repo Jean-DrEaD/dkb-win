@@ -98,6 +98,15 @@ static class Ferramentas
             await Bash(t, "pacman -Syuu --noconfirm", log, ct);   // pode fechar a si mesmo
             await Bash(t, "pacman -Syuu --noconfirm", log, ct);
         }
+        var ring = Path.Combine(t.Msys, "etc", "pacman.d", "gnupg", "pubring.gpg");
+        if (!File.Exists(ring))
+        {
+            log("== MSYS2 keyring ==");
+            if (await Bash(t, "pacman-key --init && pacman-key --populate msys2", log, ct) != 0 || !File.Exists(ring))
+                throw new Exception("Falha ao criar o keyring do MSYS2 (antivirus?)");
+            await Bash(t, "pacman -Syuu --noconfirm", log, ct);   // pode fechar a si mesmo
+            await Bash(t, "pacman -Syuu --noconfirm", log, ct);
+        }
         // Corrige o erro do print: so instala com --needed e confere arquivos (sem pacman -Q)
         log("== Pacotes MSYS2 clang64 (inclui Vulkan) ==");
         var list = string.Join(" ", Pkgs.Select(p => "mingw-w64-clang-x86_64-" + p));
