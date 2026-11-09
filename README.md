@@ -59,3 +59,14 @@ keeps its own license. The license grants nothing for Nintendo's game.
 
 Independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Donkey Kong Bananza* and
 *Nintendo Switch 2* are trademarks of Nintendo.
+
+## ⚠️ Antes de criar o jogo: cache de shaders
+
+O preparo dos shaders compila ~34 mil variantes (~18 min) e guarda tudo no cache do driver.
+Se o cache for pequeno, o driver descarta parte e o 1º boot fica com **tela preta / cutscene travada**.
+
+**NVIDIA:** Painel de Controle NVIDIA → Gerenciar configurações 3D → **Tamanho do cache de sombreador → Ilimitado** → Aplicar. Depois rode o **Criar**.
+
+**AMD (não testado):** AMD Software (Adrenalin) → Jogos → Gráficos → **Cache de sombreador: Ativado**. Não use "Redefinir cache de sombreador" depois do Criar.
+
+Se o jogo já foi criado com cache limitado: ajuste a opção e rode o **Criar** de novo.
