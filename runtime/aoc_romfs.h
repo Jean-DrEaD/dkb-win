@@ -17,6 +17,7 @@ const char *aoc_image_path(uint32_t index);                 // "<folder>/aoc-<in
 
 int aoc_owns(const char *path);                             // path is on the mounted add-on content
 int aoc_handle(uint64_t h);
+const char *aoc_loose_dir(uint32_t index);                // dkb-win: loose RomFS folder for index, or NULL
 uint32_t aoc_mount(const char *name, uint32_t index);       // nn::fs::MountAddOnContent
 uint32_t aoc_unmount(const char *name);
 uint32_t aoc_open(uint64_t *out, const char *path, int mode);

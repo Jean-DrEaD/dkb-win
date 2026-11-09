@@ -34,7 +34,8 @@
 #define NMOUNTS 16
 #define PATH_CAP 1100
 
-enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO };   // M_SAVE: the working copy; M_SAVE_RO: the committed save
+enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO, M_AOC };   // M_AOC: dkb-win loose DLC folder, read-only
+   // M_SAVE: the working copy; M_SAVE_RO: the committed save
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
 typedef struct { PlatFile *h; int mode, save; } File;   // h NULL = free; save: on a save-data mount
@@ -686,7 +687,7 @@ static uint32_t host_path(const char *path, char *out, size_t cap) { return host
 static uint32_t save_change_path(const char *path, char *out, size_t cap) {
     int kind = M_FREE;
     uint32_t r = host_path_kind(path, out, cap, &kind);
-    if (!r && kind == M_SAVE_RO) return FS_R_UNSUPPORTED_OPEN;
+    if (!r && (kind == M_SAVE_RO || kind == M_AOC)) return FS_R_UNSUPPORTED_OPEN;
     if (!r && kind == M_SAVE) save_touched();
     return r;
 }
@@ -869,7 +870,7 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     uint32_t r = host_path_kind(path, p, sizeof p, &kind);
     if (r) return r;
     if (plat_fs_kind(p) != PLAT_FS_FILE) return FS_R_PATH_NOT_FOUND;
-    if (kind == M_SAVE_RO && (mode & FS_OPEN_WRITE)) return FS_R_UNSUPPORTED_OPEN;
+    if ((kind == M_SAVE_RO || kind == M_AOC) && (mode & FS_OPEN_WRITE)) return FS_R_UNSUPPORTED_OPEN;
     int save_writer = kind == M_SAVE && (mode & FS_OPEN_WRITE);
     int err = 0;
     PlatFile *f = plat_fs_open(p, (mode & FS_OPEN_WRITE) != 0, &err);
@@ -1211,9 +1212,23 @@ HOST_OVERRIDE("_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ov_ensure_save);
 HOST_OVERRIDE(S_MOUNT_TEMP, ov_mount_temp);
 // nn::Result MountAddOnContent(const char *mount, int addon_index): the packed add-on content next to the
 // executable, read-only, one at a time
-static void ov_mount_aoc(Cpu *c) { ret_x(c, aoc_mount(arg_p(c, 0), (uint32_t)(int32_t)arg_x(c, 1))); }
+static void ov_mount_aoc(Cpu *c) {
+    const char *name = arg_p(c, 0);
+    uint32_t index = (uint32_t)(int32_t)arg_x(c, 1);
+    const char *dir = aoc_loose_dir(index);   // dkb-win: loose folder first (mods), packed aoc-N otherwise
+    if (dir) { rt_log("aoc: MountAddOnContent %s index %u (loose)", name ? name : "(null)", index); ret_x(c, mount_add(name, M_AOC, dir)); return; }
+    ret_x(c, aoc_mount(name, index));
+}
 // nn::Result UnmountAddOnContent(const char *mount)
-static void ov_unmount_aoc(Cpu *c) { ret_x(c, aoc_unmount(arg_p(c, 0))); }
+static void ov_unmount_aoc(Cpu *c) {
+    const char *name = arg_p(c, 0);
+    int found = 0;
+    plat_mutex_lock(&lock);
+    for (int i = 0; i < NMOUNTS; i++)
+        if (name && mounts[i].kind == M_AOC && !strcmp(mounts[i].name, name)) { mounts[i].kind = M_FREE; found = 1; }
+    plat_mutex_unlock(&lock);
+    ret_x(c, found ? 0 : aoc_unmount(name));
+}
 // nn::Result QueryMountAddOnContentCacheSize(u64 *out, s32 addon_index): no cache, the host reads the image. Both
 // the name and this argument list are what the run reported (sdk+0x3e8124, called from main+0x195c0dc); the earlier
 // guess that took a mount name was wrong, and it left the guest SDK asking fsp-srv for a service the host has none of.

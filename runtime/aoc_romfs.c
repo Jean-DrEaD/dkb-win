@@ -28,6 +28,9 @@ typedef struct { uint64_t offset, size; uint32_t name, len; } Row;   // a TOTKRF
 
 enum { AOC_SLOTS = 256 };
 
+#include <stdlib.h>
+#include <sys/stat.h>
+static char loose_dir[1900];   // dkb-win: loose DLC RomFS (DKB_AOC_DIR or <exe>/dlc/romfs), index 1
 static char aoc_root[1800];             // the exe's folder: where aoc-<index> directories are looked for
 static uint32_t aoc_ids[AOC_MAX];
 static int aoc_n;                       // written once, by scan_once, before scan() returns to anyone
@@ -94,6 +97,20 @@ static void scan_once(void *param) {
         if (!plat_file_exists(path)) continue;
         aoc_ids[aoc_n++] = i;
     }
+    const char *env = getenv("DKB_AOC_DIR");
+    if (env && *env) snprintf(loose_dir, sizeof loose_dir, "%s", env);
+    else snprintf(loose_dir, sizeof loose_dir, "%s/dlc/romfs", aoc_root);
+    struct stat st;
+    if (stat(loose_dir, &st) == 0 && (st.st_mode & S_IFDIR)) {
+        int has = 0;
+        for (int i = 0; i < aoc_n; i++) if (aoc_ids[i] == 1) has = 1;
+        if (!has && aoc_n < AOC_MAX) {
+            int j = aoc_n++;
+            while (j > 0 && aoc_ids[j - 1] > 1) { aoc_ids[j] = aoc_ids[j - 1]; j--; }
+            aoc_ids[j] = 1;
+        }
+        rt_log("aoc: loose add-on content 1 -> %s", loose_dir);
+    } else loose_dir[0] = 0;
     rt_log("aoc: %d add-on content%s next to the executable", aoc_n, aoc_n == 1 ? "" : "s");
 }
 
@@ -102,6 +119,8 @@ static void scan(void) {
     static PlatOnce once = PLAT_ONCE_INIT;
     plat_once(&once, scan_once, NULL);
 }
+
+const char *aoc_loose_dir(uint32_t index) { scan(); return index == 1 && loose_dir[0] ? loose_dir : NULL; }
 
 uint32_t aoc_count(void) {
     scan();
