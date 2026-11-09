@@ -262,7 +262,7 @@ public partial class MainWindow : Window
             var logf = System.IO.Path.Combine(tools.Dir, "setup.log");
             var oldTitle = Title; Title = "DKB - baixando ferramentas em tools\\ (uma vez só)…";
             try { await Task.Run(() => Ferramentas.Prepare(tools, s => { try { System.IO.File.AppendAllText(logf, s + "\n"); } catch { } }, CancellationToken.None)); }
-            catch (Exception e) { checking = false; Title = oldTitle; ShowProblem("Falha ao baixar as ferramentas: " + e.Message + " (veja tools\\setup.log)", tools: true); return; }
+            catch (Exception e) { checking = false; Title = oldTitle; ShowProblem("Falha ao baixar as ferramentas: " + e.Message + (e is UnauthorizedAccessException or System.IO.FileNotFoundException ? " (antivirus?)" : "") + " (veja tools\\setup.log)", tools: true); return; }
             Title = oldTitle;
         }
         while (tools != null && dumps.FirstOrDefault(d => !checks.ContainsKey(d.Path)) is { } d)
@@ -628,10 +628,11 @@ public partial class MainWindow : Window
         if (tools)
         {
             ProblemTitle.Text = "The build tools need repairing";
-            ProblemHead.Text = "Your antivirus removed part of the build tools";
-            ProblemText.Text = why + "\n\nAntivirus programs sometimes flag unsigned developer tools by mistake.";
+            var av = why.Contains("antivirus", StringComparison.OrdinalIgnoreCase);
+            ProblemHead.Text = av ? "Your antivirus removed part of the build tools" : "Could not download the build tools";
+            ProblemText.Text = why + (av ? "\n\nAntivirus programs sometimes flag unsigned developer tools by mistake." : "\n\nCheck your internet connection, then press Repair to try again.");
             var base_ = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DkbBuilder");
-            foreach (var (n, s) in new[]
+            if (av) foreach (var (n, s) in new[]
                      {
                          (1, "Open Windows Security → Protection history, and restore the removed files."),
                          (2, $"Or add {base_} to its exclusions."),
@@ -679,6 +680,13 @@ public partial class MainWindow : Window
 
     /// The setup (DkbBuilder-Setup.exe beside this app) checks every part against its checksum and downloads the missing ones
     void Repair(object sender, RoutedEventArgs e)
+    {
+        var t = Tools.Find();
+        if (t != null) try { System.IO.File.Delete(System.IO.Path.Combine(t.Dir, ".ready")); System.IO.File.Delete(System.IO.Path.Combine(t.Dir, "setup.log")); } catch { }
+        checks.Clear(); chosenNup = null; checking = false;
+        ShowMain(); CheckAll();
+    }
+    void RepairOld(object sender, RoutedEventArgs e)
     {
         var setup = System.IO.Path.Combine(AppContext.BaseDirectory, "DkbBuilder-Setup.exe");
         if (File.Exists(setup))

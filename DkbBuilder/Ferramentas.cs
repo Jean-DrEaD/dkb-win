@@ -41,8 +41,9 @@ static class Ferramentas
         if (!File.Exists(t.Src + "\\.ok") || File.ReadAllText(t.Src + "\\.ok").Trim() != Tools.Tag)
         {
             log("== Codigo-fonte " + Tools.Tag + " ==");
-            string url;
-            using (var doc = JsonDocument.Parse(await Http.GetStringAsync(RelApi, ct))) url = doc.RootElement.GetProperty("zipball_url").GetString()!;
+            string url; var got = Tools.Tag;
+            try { using (var doc = JsonDocument.Parse(await Http.GetStringAsync(RelApi, ct))) url = doc.RootElement.GetProperty("zipball_url").GetString()!; }
+            catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound) { url = "https://api.github.com/repos/Jean-DrEaD/dkb-win/zipball/main"; got = "main"; log("[AVISO] release " + Tools.Tag + " ainda nao existe: usando main"); }
             var zip = Path.Combine(tmp, "src.zip");
             await Download(url, zip, log, ct);
             var part = t.Src + ".part"; if (Directory.Exists(part)) Directory.Delete(part, true);
@@ -50,7 +51,7 @@ static class Ferramentas
             var inner = Directory.GetDirectories(part).First();
             if (Directory.Exists(t.Src)) Directory.Delete(t.Src, true);
             Directory.Move(inner, t.Src); Directory.Delete(part, true);
-            File.WriteAllText(t.Src + "\\.ok", Tools.Tag); File.Delete(Path.Combine(Path.GetDirectoryName(t.Python)!, ".pip-ok"));
+            File.WriteAllText(t.Src + "\\.ok", got); File.Delete(Path.Combine(Path.GetDirectoryName(t.Python)!, ".pip-ok"));
         }
 
         var pyDir = Path.GetDirectoryName(t.Python)!;
