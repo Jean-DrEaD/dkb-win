@@ -255,6 +255,11 @@ def nup_source(layout, path, select):
     return game, hashes, files
 
 
+def unsafe_temp_chars(path):
+    # NativeAOT's generated link script puts the work path on a shell command line unquoted (issue 189).
+    return ''.join(sorted({ch for ch in str(path) if ch in "()&;|<>$`'\"!*?[]{}#~"}))
+
+
 def preflight(layout, options, dest, temp, rep):
     if options.base or options.update or options.keys:
         raise InstallError('dkb.update_unsupported')
@@ -455,10 +460,16 @@ def run_tool(ctx, step, command, env=None, cwd=None, name=None):
     log.parent.mkdir(parents=True, exist_ok=True)
     ctx.reporter.progress(step, 'dkb_run', force=True)
     with log.open('w', encoding='utf-8') as out:
-        proc = subprocess.Popen(list(map(str, command)), cwd=cwd or ctx.layout.root, stdin=subprocess.DEVNULL,
-                                stdout=out, stderr=subprocess.STDOUT,
-                                env=dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **(env or {})),
-                                start_new_session=os.name != 'nt')
+        try:
+            proc = subprocess.Popen(list(map(str, command)), cwd=cwd or ctx.layout.root, stdin=subprocess.DEVNULL,
+                                    stdout=out, stderr=subprocess.STDOUT,
+                                    env=dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **(env or {})),
+                                    start_new_session=os.name != 'nt')
+        except OSError as e:
+            if getattr(e, 'winerror', None) != 740:   # ERROR_ELEVATION_REQUIRED
+                raise
+            ctx.reporter.log(f'{step}: Windows requires elevation to start {command[0]}')
+            raise InstallError('dkb.elevation_required', exe=Path(str(command[0])).name) from None
         try:
             code = proc.wait()
         except BaseException:
@@ -819,8 +830,14 @@ def main(options):
         raw_base = (options.temp or layout.temp or dest.parent / '.dkb-setup').absolute()
         ensure_plain(raw_base)
         base = raw_base.resolve()
+        if os.name != 'nt' and unsafe_temp_chars(base):
+            raise InstallError('dkb.temp_unsafe_path', path=str(base))
         tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:12]
-        temp = base / f'dkb-{dest.name}-{tag}'
+        # The work folder's name goes onto compiler and MSBuild command lines that split on spaces (issue 134): keep
+        # only characters that need no quoting. The tag already tells two destinations apart; a name that was safe
+        # keeps its folder, so an interrupted setup still resumes.
+        safe = ''.join(ch if ch.isascii() and (ch.isalnum() or ch in '._-') else '_' for ch in dest.name)
+        temp = base / f'dkb-{safe}-{tag}'
         info = preflight(layout, options, dest, temp, rep)
         # All read-only validation succeeded. Logs and owned output may now be created.
         temp.mkdir(parents=True, exist_ok=True)

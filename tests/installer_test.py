@@ -1,5 +1,5 @@
 """installer/ bookkeeping with fake steps: fresh install, resume after a failure or cancel, transient steps, update
-with a newer release, dkb.ini and the event stream. No game files, no tools; stdlib only.
+with a newer release, totk.ini and the event stream. No game files, no tools; stdlib only.
 
 Run: python tests/installer_test.py
 """
@@ -314,9 +314,9 @@ class EventsTest(unittest.TestCase):
         catalog = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))
         used = set()
         for path in (ROOT / 'installer').glob('*.py'):
-            used |= set(re.findall(r"InstallError\('([a-z_.]+)'", path.read_text()))
-            used |= set(re.findall(r"warning\('([a-z_.]+)'", path.read_text()))
-            used |= {f'phase.{s}.{p}' for s, p in re.findall(r"progress\('(\w+)', '(\w+)'[,)]", path.read_text())}
+            used |= set(re.findall(r"InstallError\('([a-z_.]+)'", path.read_text(encoding='utf-8')))
+            used |= set(re.findall(r"warning\('([a-z_.]+)'", path.read_text(encoding='utf-8')))
+            used |= {f'phase.{s}.{p}' for s, p in re.findall(r"progress\('(\w+)', '(\w+)'[,)]", path.read_text(encoding='utf-8'))}
         self.assertEqual(sorted(i for i in used if i not in catalog), [])
 
 

@@ -145,7 +145,7 @@ static int test_present(const GfxBackend *b, uint8_t *guest, int *w_out, int *h_
     else CHECK(0, "swapchain format %d is not UNORM RGBA/BGRA", (int)fmt);
     uint32_t wv, black = 0xff000000u;   // opaque black in both byte orders
     memcpy(&wv, want, 4);
-    int r[4];   // the picture's rectangle; black bars around it when the window's shape differs (gfx_present.c)
+    int r[4];   // the picture's rectangle; black bars around it when the window's shape differs (gfx_window.c)
     gfx_fit_rect(TEX_W, TEX_H, w, h, r);
     const uint32_t *p = (const uint32_t *)px;
     for (long k = 0, n = (long)w * h; k < n; k++) {
@@ -847,6 +847,7 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
 }
 
 int probe_vkexec(void) {
+    vk_hdr_off();   // the present checks read 8-bit swapchain pixels
     layouts_equal = 0;
     main_tid = plat_thread_id();
     const GfxBackend *b = &gfx_vulkan_backend;

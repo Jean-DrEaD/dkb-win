@@ -1,6 +1,6 @@
 // The in-game menu core: Dear ImGui state, the event queue the window adapter fills, gamepad navigation, the Vulkan back
 // end on our device and the menu's pages. Free of any window system (menu.h). ImGui runs on the present path only,
-// under gfx_present.c's present lock; the event functions only queue.
+// under vk_present.c's present lock; the event functions only queue.
 //
 // The Vulkan set-up follows LAS Recomp's runtime/nvn/vulkan/imgui_glue.cpp (https://github.com/peiikai/LASRecomp @
 // da35b83a9611d046a9a681aae668d7085954d37f, MIT, Copyright (c) 2026 Peiikai): dynamic rendering into the swapchain
@@ -46,9 +46,13 @@ extern "C" {
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
-void res_sizes(unsigned out[2], unsigned scene[2]);
+void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]);
+int res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
+int frame_step_realtime(void);
+int rt_patch_set(const char *name);
 extern const int rt_game_version;
+extern const char rt_game_target[];   // build target: dkb100, dkb458752 or a TotK one
 // fs.h (romfs.c): romfs-patches-xbox was next to romfs-index.bin at start, and was loaded.
 int romfs_xbox_prompts_ready(void);
 int romfs_xbox_prompts_active(void);
@@ -253,6 +257,9 @@ static void style_init(ImGuiStyle &s, bool dk) {
     c[ImGuiCol_NavCursor] = gold;
     c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
     if (dk) style_dk(s);
+    c[ImGuiCol_Header] = c[ImGuiCol_Button];
+    c[ImGuiCol_HeaderHovered] = c[ImGuiCol_ButtonHovered];
+    c[ImGuiCol_HeaderActive] = c[ImGuiCol_ButtonActive];
 }
 
 static void make_context(void) {
@@ -291,7 +298,7 @@ static int vk_up(const MenuTarget *t) {
     ii.Queue = t->queue;
     ii.DescriptorPoolSize = 16;
     ii.MinImageCount = 2;
-    ii.ImageCount = 4;   // vertex buffers rotate per recorded frame: more than gfx_present.c's 2 frames in flight
+    ii.ImageCount = 4;   // vertex buffers rotate per recorded frame: more than vk_present.c's 2 frames in flight
     ii.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     ii.UseDynamicRendering = true;
     g_vk_fmt = t->format;
@@ -401,7 +408,7 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
+enum { TAB_DISPLAY, TAB_GRAPHICS, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -517,7 +524,6 @@ static void row_window_size(void) {
 // another shape, resolution.c res_init; the installer lays the HUD out for each, installer/steps.py ASPECT_SIZES), and
 // the current value when it is another size.
 static void row_output_res(void) {
-    if (!rt_game_version) return;  // Bananza's resolution row is beside its ultrawide setting.
     static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160",
                                        "2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440",
                                        "1280x800", "1680x1050", "1920x1200", "2560x1600"};
@@ -533,38 +539,43 @@ static void row_output_res(void) {
     opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC);
 }
 
-// The resolution is always editable. Ultrawide selects the available aspect
-// ratios; switching it keeps the nearest render height, preferring the monitor's
-// aspect when widening. Window dimensions do not change the render resolution.
-static void rows_dkb_wide(void) {
-    // 5120x1440 and 3840x2160 fail during game render-resource creation. Keep
-    // presets within the largest tested frame (3440x1440) until that is fixed.
-    static const char *const standard[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "2880x1620"};
-    static const char *const wide[] = {"2560x1080", "3440x1440", "3840x1080"};
-    bool enabled = cfg_bool("TOTK_ULTRAWIDE");
-    const char *const *sizes = enabled ? wide : standard;
-    int count = enabled ? sizeof wide / sizeof *wide : sizeof standard / sizeof *standard;
+static const char *const *dkb_render_sizes(bool ultrawide, int &count) {
+    // The dkbwide patch grows the game's fixed render-target pool for larger sizes.
+    static const char *const standard[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "2880x1620", "3840x2160"};
+    static const char *const wide[] = {"2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440"};
+    count = ultrawide ? sizeof wide / sizeof *wide : sizeof standard / sizeof *standard;
+    return ultrawide ? wide : standard;
+}
+
+static void row_dkb_resolution(void) {
+    int count;
+    const char *const *sizes = dkb_render_sizes(cfg_bool("TOTK_ULTRAWIDE"), count);
     opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_WIDE_RES, sizes, sizes, count, UI_MENU_WIDE_RES_DESC);
-    row_window_size();
-    bool changed = opt_toggle("TOTK_ULTRAWIDE", UI_MENU_ULTRAWIDE, UI_MENU_ULTRAWIDE_DESC);
-    enabled = cfg_bool("TOTK_ULTRAWIDE");
-    sizes = enabled ? wide : standard;
-    count = enabled ? sizeof wide / sizeof *wide : sizeof standard / sizeof *standard;
-    if (changed && !cfg_from_env("TOTK_OUTPUT_RES")) {
-        int old_w = 0, old_h = 1080, mw = 0, mh = 0, best = 0;
-        sscanf(cfg_value("TOTK_OUTPUT_RES"), "%dx%d", &old_w, &old_h);
-        double aspect = 3440.0 / 1440;
-        if (gfx_window_monitor_size(&mw, &mh) && mh > 0 && mw * 9 > mh * 16) aspect = (double)mw / mh;
-        double best_score = 1e20;
-        for (int i = 0; i < count; i++) {
-            int w, h;
-            sscanf(sizes[i], "%dx%d", &w, &h);
-            double score = abs(h - old_h) + (enabled ? fabs((double)w / h - aspect) * 2000 : 0);
-            if (score < best_score) best = i, best_score = score;
-        }
-        cfg_set("TOTK_OUTPUT_RES", sizes[best]);
-        opt_save_soon();
+}
+
+// Switching aspect keeps the nearest render height, preferring the monitor's aspect when widening.
+static void row_dkb_ultrawide(void) {
+    bool changed = opt_toggle("TOTK_ULTRAWIDE", UI_MENU_ENABLE_ULTRAWIDE, UI_MENU_ULTRAWIDE_DESC);
+    if (!changed || cfg_from_env("TOTK_OUTPUT_RES")) return;
+    bool enabled = cfg_bool("TOTK_ULTRAWIDE");
+    int count;
+    const char *const *sizes = dkb_render_sizes(enabled, count);
+    int old_w = 0, old_h = 1080, mw = 0, mh = 0, best = 0;
+    sscanf(cfg_value("TOTK_OUTPUT_RES"), "%dx%d", &old_w, &old_h);
+    double aspect = 3440.0 / 1440;
+    if (gfx_window_monitor_size(&mw, &mh) && mh > 0 && mw * 9 > mh * 16) aspect = (double)mw / mh;
+    double best_score = 1e20;
+    for (int i = 0; i < count; i++) {
+        int w, h;
+        sscanf(sizes[i], "%dx%d", &w, &h);
+        double score = abs(h - old_h) + (enabled ? fabs((double)w / h - aspect) * 2000 : 0);
+        if (score < best_score) best = i, best_score = score;
     }
+    cfg_set("TOTK_OUTPUT_RES", sizes[best]);
+    opt_save_soon();
+}
+
+static void row_dkb_hud_position(void) {
     static const char *const positions[] = {"edges", "centered"};
     const char *names[] = {menu_text(UI_MENU_HUD_EDGES), menu_text(UI_MENU_HUD_CENTERED)};
     if (!cfg_bool("TOTK_ULTRAWIDE")) opt_disable_next(UI_MENU_WIDE_DISABLED);
@@ -625,9 +636,10 @@ static void row_game_lang(void) {
 // The frame limit (frame_rate.c): unset, the older fps60 = 0 still means 30. The monitor choice shows the rate it gives.
 static void row_fps_limit() {
     // 40 and 45: the Steam Deck's screen runs at 40 to 60 Hz (the OLED to 90); 40 divides 40 and 120 Hz evenly
-    static const char *const vals[] = {"30", "40", "45", "60", "90", "120", "144", "display"};
+    static const char *const vals[] = {"30", "40", "45", "60", "90", "120", "144", "display", "unlimited"};
     static const UiTextId ids[] = {UI_MENU_FPS_30, UI_MENU_FPS_40,  UI_MENU_FPS_45,  UI_MENU_FPS_60,
-                                   UI_MENU_FPS_90, UI_MENU_FPS_120, UI_MENU_FPS_144, UI_MENU_FPS_DISPLAY};
+                                   UI_MENU_FPS_90, UI_MENU_FPS_120, UI_MENU_FPS_144, UI_MENU_FPS_DISPLAY,
+                                   UI_MENU_FPS_UNLIMITED};
     enum { N = sizeof vals / sizeof *vals };
     const char *names[N];
     for (int i = 0; i < N; i++) names[i] = menu_text(ids[i]);
@@ -635,8 +647,9 @@ static void row_fps_limit() {
     double hz = gfx_window_refresh_hz();
     if (hz > 0) {
         snprintf(display, sizeof display, menu_text(UI_MENU_FPS_DISPLAY_HZ), hz);
-        names[N - 1] = display;
+        names[N - 2] = display;
     }
+    if (!rt_game_version && !frame_step_realtime()) opt_disable_next(UI_MENU_FPS_NEEDS_REALTIME);   // Bananza follows the game's own timing
     const char *set = cfg_get("TOTK_FPS_LIMIT"), *old = cfg_get("TOTK_FPS60");
     int cur = (!set || !*set) && old && !strcmp(old, "0") ? 0 : -1;
     opt_choice_list("TOTK_FPS_LIMIT", UI_MENU_FPS_LIMIT, vals, names, N,
@@ -653,7 +666,7 @@ static const char *present_name(const char *mode) {
     return nullptr;
 }
 
-// "in use: VSync" under the Presentation value when the swapchain got another mode than the setting (a driver without
+// "in use: VSync" under the frame sync label when the swapchain got another mode than the setting (a driver without
 // mailbox gets fifo); NULL when they agree or before the first swapchain.
 static const char *present_note(void) {
     const char *got = gfx_window_present_mode(), *name = present_name(got);
@@ -671,7 +684,6 @@ static void rows_color(void) {
         {"default", "0", "100", "100", "1"}, {"vivid", "0", "115", "135", "0.95"}, {"clarity", "2", "110", "115", "1"}};
     static const UiTextId names[] = {UI_MENU_COLOR_DEFAULT, UI_MENU_COLOR_VIVID, UI_MENU_COLOR_CLARITY,
                                      UI_MENU_COLOR_CUSTOM};
-    opt_group(UI_MENU_COLOR);
     if (opt_choice("TOTK_COLOR_PRESET", UI_MENU_COLOR_PRESET, names, 4, UI_MENU_COLOR_PRESET_DESC)) {
         const char *p = cfg_value("TOTK_COLOR_PRESET");
         for (const auto &e : presets)
@@ -703,38 +715,89 @@ static void row_window_mode(void) {
         cfg_set("TOTK_FULLSCREEN", gfx_cfg_window_mode() ? "1" : "0");   // the save is already scheduled
 }
 
-static void tab_screen(float scale) {
-    opt_begin("##screen", scale);
-    row_window_mode();
-    row_output_res();
-    if (!rt_game_version) rows_dkb_wide();
-    else row_window_size();
-    static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
-    opt_choice("TOTK_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
-    row_gpu();
-    static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
-    opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
-    opt_group(UI_MENU_GRAPHICS);
-    row_render_scale();
+static void rows_render_options(const MenuTarget &target) {
+    if (rt_game_version) row_render_scale();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
+    int fitted[4];
+    gfx_fit_rect(target.image_w, target.image_h, target.width, target.height, fitted);
+    bool no_upscale = target.image_w > 0 && target.image_h > 0 &&
+                      fitted[2] <= target.image_w && fitted[3] <= target.image_h;
+    // DLSS can run inside the game's renderer, even if the final image fits the display.
+    if (no_upscale && strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) opt_disable_next(UI_MENU_NO_UPSCALING);
     opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
+    if (no_upscale) opt_disable_next(UI_MENU_NO_UPSCALING);
+    else if (!strcmp(cfg_value("TOTK_UPSCALER"), "bilinear")) opt_disable_next(UI_MENU_SHARPNESS_NEEDS_FSR);
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId smaa[] = {UI_MENU_OFF, UI_MENU_SMAA_LOW, UI_MENU_SMAA_MEDIUM, UI_MENU_SMAA_HIGH};
     opt_choice("TOTK_SMAA", UI_MENU_SMAA, smaa, 4, UI_MENU_SMAA_DESC);
+    if (rt_patch_set("fov") >= 0)
+        opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
+}
+
+static void rows_hdr(void) {
+    opt_toggle("TOTK_HDR", UI_MENU_HDR, UI_MENU_HDR_DESC);
+    // native HDR is in effect on 3.2.0 only (ov_gfx.c hdr_native_on), so the row is shown only there
+    if (!strcmp(rt_game_target, "dkb458752")) opt_toggle("TOTK_HDR_NATIVE", UI_MENU_HDR_NATIVE, UI_MENU_HDR_NATIVE_DESC);
+    opt_slider("TOTK_HDR_PEAK_NITS", UI_MENU_HDR_PEAK, 400, 10000, UI_MENU_HDR_PEAK_DESC, 50, "%.0f");
+    opt_slider("TOTK_HDR_GAME_NITS", UI_MENU_HDR_GAME, 80, 500, UI_MENU_HDR_GAME_DESC, 5, "%.0f");
+    opt_slider("TOTK_HDR_UI_NITS", UI_MENU_HDR_UI, 80, 500, UI_MENU_HDR_UI_DESC, 5, "%.0f");
+}
+
+static void rows_display_output(void) {
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
-    opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
-    rows_color();
+    static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
+    opt_choice("TOTK_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
+    static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
+    opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
+    row_gpu();
+}
+
+static bool settings_section(UiTextId title, const char *id, bool first = false) {
+    if (!first) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2 * ImGui::GetStyle().ItemSpacing.y);
+    char label[96];
+    snprintf(label, sizeof label, "%s###%s", menu_text(title), id);
+    bool open = ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
+    opt_focus_first_item();
+    return open;
+}
+
+static void tab_display(float scale) {
+    opt_begin("##screen", scale);
+    if (settings_section(UI_MENU_RESOLUTION_GROUP, "resolution", true)) {
+        row_window_mode();
+        if (!rt_game_version) row_dkb_resolution();
+        else row_output_res();
+        row_window_size();
+    }
+    if (!rt_game_version && settings_section(UI_MENU_FRAME_RATE_GROUP, "frame_rate")) {
+        row_fps_limit();
+        opt_toggle("TOTK_REALTIME", UI_MENU_DKB_REALTIME, UI_MENU_DKB_REALTIME_DESC);
+    }
+    if (!rt_game_version && settings_section(UI_MENU_ULTRAWIDE, "ultrawide")) {
+        row_dkb_ultrawide();
+        row_dkb_hud_position();
+    }
+    if (settings_section(UI_MENU_DISPLAY_OUTPUT, "display_output")) rows_display_output();
+    opt_end();
+}
+
+static void tab_graphics(float scale, const MenuTarget &target) {
+    opt_begin("##graphics", scale);
+    if (settings_section(UI_MENU_RENDER_OPTIONS, "picture", true)) rows_render_options(target);
+    if (settings_section(UI_MENU_COLOR, "color")) rows_color();
+    if (settings_section(UI_MENU_HDR_GROUP, "hdr")) rows_hdr();
     opt_end();
 }
 
 static void tab_game(float scale) {
     opt_begin("##game", scale);
-    row_fps_limit();
-    opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME,
-               rt_game_version ? UI_MENU_REALTIME_DESC : UI_MENU_DKB_REALTIME_DESC);
-    opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
-    opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
+    if (rt_game_version) {
+        row_fps_limit();
+        opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
+        opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
+        opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
+    }
     row_game_lang();
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
@@ -750,7 +813,7 @@ static void tab_sound(float scale) {
     opt_end();
 }
 
-// The note under the layout. Xbox prompts (the Nintendo layout with the A/B and X/Y prompts swapped, romfs.c
+// The note under the layout label. Xbox prompts (the Nintendo layout with the A/B and X/Y prompts swapped, romfs.c
 // overlay_init) change the buttons at once but the prompts only at the next start: "files missing" without
 // romfs-patches-xbox, "prompts change after restart" while the prompts in use differ from the choice. Automatic with a
 // gamepad connected: "in use: Xbox". NULL otherwise.
@@ -766,8 +829,7 @@ static const char *pad_layout_note(void) {
     return note;
 }
 
-static void tab_controls(float scale) {
-    opt_begin("##controls", scale);
+static void rows_controller(void) {
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
                                       UI_MENU_PAD_LAYOUT_XBOX_PROMPTS};
     opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
@@ -776,10 +838,30 @@ static void tab_controls(float scale) {
     opt_slider("TOTK_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
     opt_toggle("TOTK_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
     opt_slider("TOTK_STICK_DEADZONE", UI_MENU_STICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%");
-    if (!rt_game_version) opt_toggle("TOTK_MOUSE_CAMERA", UI_MENU_MOUSE_CAMERA, UI_MENU_MOUSE_CAMERA_DESC);
-    opt_slider("TOTK_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
-    binds_rows(scale);
-    opt_end();
+}
+
+static void tab_controls(float scale) {
+    if (ImGui::BeginTabBar("##input_devices")) {
+        char controller[96], mouse_keys[96];
+        snprintf(controller, sizeof controller, "%s###controller", menu_text(UI_MENU_CONTROLLER));
+        snprintf(mouse_keys, sizeof mouse_keys, "%s###mouse_keys", menu_text(UI_MENU_MOUSE_KEYBOARD));
+        if (ImGui::BeginTabItem(controller)) {
+            opt_begin("##controller_settings", scale);
+            rows_controller();
+            binds_rows(scale, true);
+            opt_end();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem(mouse_keys)) {
+            opt_begin("##mouse_keyboard_settings", scale);
+            if (!rt_game_version) opt_toggle("TOTK_MOUSE_CAMERA", UI_MENU_MOUSE_CAMERA, UI_MENU_MOUSE_CAMERA_DESC);
+            opt_slider("TOTK_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
+            binds_rows(scale, false);
+            opt_end();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
     binds_after_page();
 }
 
@@ -854,6 +936,14 @@ static void tab_advanced(float scale) {
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
     opt_choice("TOTK_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
     opt_toggle("TOTK_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
+    {
+        static const char *const vals[] = {"0", "2", "4", "5", "6", "8", "12", "16"};
+        enum { N = sizeof vals / sizeof *vals };
+        const char *names[N];
+        names[0] = menu_text(UI_MENU_OFF);
+        for (int i = 1; i < N; i++) names[i] = vals[i];
+        opt_choice_list("TOTK_REPLAY_THREADS", UI_MENU_REPLAY_THREADS, vals, names, N, UI_MENU_REPLAY_THREADS_DESC);
+    }
     opt_toggle("TOTK_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
 
     opt_group(UI_MENU_GROUP_SHADERS);
@@ -1014,7 +1104,7 @@ static void header_dk(float scale, const char *version) {
     ImGui::Dummy(ImVec2(w, hh));
 }
 
-static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND,
+static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_DISPLAY, UI_MENU_TAB_GRAPHICS, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND,
                                               UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU, UI_MENU_TAB_ADVANCED};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
@@ -1022,7 +1112,8 @@ static int g_focus_page = -1;   // this tab's first row takes the cursor once it
 
 // ---- the window: title, tabs (L / R or Q / E switch), the page, and the bottom row with "Continue" and "Quit game".
 // B on the gamepad and Esc close it.
-static void layout_menu(uint32_t w, uint32_t h, float scale) {
+static void layout_menu(const MenuTarget &target, float scale, bool had_popup) {
+    uint32_t w = target.width, h = target.height;
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(0, 0, 0, 120));
     float ww = fminf(w * 0.88f, 1400 * scale), wh = fminf(h * 0.86f, 820 * scale);
     ImGui::SetNextWindowPos(ImVec2(w * 0.5f, h * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -1040,7 +1131,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
         ImGui::TextDisabled("%s", version);
     }
 
-    int step = g_modal || binds_modal()                                                                  ? 0
+    int step = had_popup || g_modal || binds_modal()                                                     ? 0
              : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
              : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1
                                                                                                          : 0;
@@ -1071,7 +1162,8 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             // buttons and the tabs (up from "Continue" went to the tabs, down from the tabs to "Continue")
             opt_reserve_bottom(bottom);
             switch (k) {
-            case TAB_SCREEN: tab_screen(scale); break;
+            case TAB_DISPLAY: tab_display(scale); break;
+            case TAB_GRAPHICS: tab_graphics(scale, target); break;
             case TAB_GAME: tab_game(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
@@ -1099,7 +1191,8 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
     bool was_modal = g_modal || binds_modal();
     if (g_tab != TAB_ADVANCED) g_modal = false;
-    if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
+    if (!was_modal && !had_popup &&
+        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();
 }
@@ -1222,15 +1315,18 @@ static void perf_label(UiTextId label, const ImVec4 &c) {
 static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 
 // The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), how the
-// present scales the image to the window (gfx_present.c, the last present), the frame limit and the presentation mode
+// present scales the image to the window (vk_present.c, the last present), the frame limit and the presentation mode
 // in use.
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     unsigned out[2], scene[2];
-    res_sizes(out, scene);
+    int have = res_sizes(out, scene);
     char v[6][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
-    snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
+    if (!have) snprintf(v[2], sizeof v[2], "%s", menu_text(UI_MENU_OV_NO_UPSCALER));   // Bananza, no upscaler dispatch lately
+    else if (!rt_game_version)
+        snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_UPSCALE), scene[0], scene[1], out[0], out[1]);
+    else snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
     if (t->scaler == 2) {
         int s = cfg_int("TOTK_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
@@ -1419,8 +1515,10 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
         plat_mutex_unlock(&ev_lock);
     }
     ImGui_ImplVulkan_NewFrame();
+    // NewFrame can dismiss a dropdown on Escape/B. That press belongs to the dropdown, not to the menu.
+    bool had_popup = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     ImGui::NewFrame();
-    if (open) layout_menu(t->width, t->height, scale);
+    if (open) layout_menu(*t, scale, had_popup);
     perf_draw(t, scale);
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);

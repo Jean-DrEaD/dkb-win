@@ -216,6 +216,11 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+// Windows only: a read or write that faults on a reserved page inside [base, base + size) commits the 64 KiB chunk
+// around it and retries (the guest heap with TOTK_HEAP_LAZY). Lock-free in the handler; plat_mem_lazy_faults counts them.
+void plat_mem_lazy(uint64_t base, uint64_t size);
+uint64_t plat_mem_lazy_faults(void);
+uint32_t plat_mem_lazy_failure(uint64_t *addr);   // error and address of the last failed lazy commit, 0 when none
 // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);
@@ -408,6 +413,13 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb);
 // This process's memory in bytes: resident (the working set) and private (Windows: committed private bytes; Linux: the
 // resident anonymous pages). 0 when unknown.
 void plat_process_memory(uint64_t *resident, uint64_t *private_bytes);
+// Calls fn(base, size, kind, arg) for every run of committed pages in the user address space (mem_commit_report):
+// kind 0 private (malloc, thread stacks, driver memory, our reservations), 1 mapped file or section, 2 image. Windows
+// only (VirtualQuery); the other hosts call nothing.
+void plat_mem_walk(void (*fn)(uint64_t base, uint64_t size, int kind, void *arg), void *arg);
+// Bytes of [base, base+size) that are in the process working set (resident). Windows only (QueryWorkingSetEx); the
+// other hosts return 0.
+uint64_t plat_mem_resident(uint64_t base, uint64_t size);
 
 // ---- child processes: a program with stdin and stdout piped to us (stderr discarded), no console window.
 typedef struct PlatChild PlatChild;

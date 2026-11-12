@@ -27,6 +27,7 @@
 
 #include "aoc_romfs.h"
 #include "cfg.h"
+#include "gfx.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "sha256.h"
@@ -231,6 +232,12 @@ static void crash_handler(const PlatCrash *x) {
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
+#ifdef _WIN32
+    uint64_t lazy_at;
+    uint32_t lazy_err = plat_mem_lazy_failure(&lazy_at);
+    if (lazy_err)
+        rt_logf("  lazy heap commit failed: error %u at %#llx, commit limit reached?\n", lazy_err, (unsigned long long)lazy_at);
+#endif
     uint64_t f = lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
     for (int i = 0; i < x->nframes; i++) {   // abort and invalid parameter: where the host code called it
@@ -446,6 +453,7 @@ static int selftest(void) {
     float used, total, proc;
     plat_mem_info(&used, &total, &proc);
     if (proc >= 0) printf("process: working set %.0f MiB\n", proc);
+    mem_commit_report("selftest");
     printf("selftest: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;
 }
@@ -573,9 +581,9 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-vkdevice")) return probe_vkdevice();
     if (!strcmp(mode, "--probe-movie")) return probe_movie();
     if (!strcmp(mode, "--probe-aoc")) return probe_aoc();
-    if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
-    if (!strcmp(mode, "--translate-shaders")) return vk_pipeline_translate_shaders();
-    if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
+    if (!strcmp(mode, "--prepare-shaders")) return gfx_shader_tool(GFX_TOOL_PREPARE_SHADERS);
+    if (!strcmp(mode, "--translate-shaders")) return gfx_shader_tool(GFX_TOOL_TRANSLATE_SHADERS);
+    if (!strcmp(mode, "--warm-shaders")) return gfx_shader_tool(GFX_TOOL_WARM_SHADERS);
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
     return usage(argv[0]);
 }

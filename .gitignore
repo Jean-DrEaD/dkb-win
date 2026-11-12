@@ -83,7 +83,7 @@ desktop.ini
 
 backup/
 .portable/
-tools/
+DkbBuilder/**/tools/
 
 bin/
 obj/
