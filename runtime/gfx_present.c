@@ -27,6 +27,8 @@
 #include "vk.h"
 #include "platform/platform.h"
 
+void gfx_window_release_vk(void);  /* definida mais abaixo */
+
 #define FRAMES 2
 #define MAX_IMAGES 16
 #define VSYNC_NS 1000000000ull
