@@ -278,7 +278,7 @@ class ModernDkbInstaller(ctk.CTk):
             r"C:\DK-Bananza-Instalador\jogo\build\dkb100\dkb.ico",
             r"C:\Games\DKB PC\dkb-BANANAS\launcher\assets\dkb.ico",
             os.path.join(os.path.dirname(__file__), "..", "runtime", "dkb.ico"),
-            r"C:\DK-Bananza-Instalador\jogo\runtime\totk.ico",
+            r"C:\DK-Bananza-Instalador\jogo\runtime\dkb.ico",
         ]
         for c in candidates:
             if os.path.isfile(c):
