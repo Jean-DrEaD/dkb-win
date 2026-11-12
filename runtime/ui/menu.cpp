@@ -1319,10 +1319,12 @@ static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 // The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), how the
 // present scales the image to the window (vk_present.c, the last present), the frame limit and the presentation mode
 // in use.
+extern "C" int vk_fg_stats(double out[4]);   // vk_framegen.c
+
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     unsigned out[2], scene[2];
     int have = res_sizes(out, scene);
-    char v[6][64];
+    char v[7][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     if (!have) snprintf(v[2], sizeof v[2], "%s", menu_text(UI_MENU_OV_NO_UPSCALER));   // Bananza, no upscaler dispatch lately
@@ -1340,6 +1342,11 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
     const char *pm = present_name(gfx_window_present_mode());
     snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
+    bool fg_on = !strcmp(cfg_value("TOTK_FRAME_GEN"), "2x");
+    double fg[4];
+    if (!fg_on) snprintf(v[6], sizeof v[6], "off");
+    else if (!vk_fg_stats(fg)) snprintf(v[6], sizeof v[6], "2x (waiting)");
+    else snprintf(v[6], sizeof v[6], "2x %.0f -> %.0f fps%s", fg[0], fg[1], fg[3] > 1 ? ", refresh cap" : "");
     static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
                                        UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT};
     if (!ImGui::BeginTable("##perfp", 2, ImGuiTableFlags_SizingFixedFit)) return;
@@ -1352,6 +1359,10 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
         ImGui::TableNextColumn();
         perf_right(v[i], false);
     }
+    ImGui::TableNextColumn();
+    ImGui::TextColored(c, "Frame gen");
+    ImGui::TableNextColumn();
+    perf_right(v[6], !fg_on);
     ImGui::EndTable();
 }
 

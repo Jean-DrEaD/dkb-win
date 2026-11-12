@@ -302,6 +302,18 @@ static void pass(VkCommandBuffer cb, const Pipe *p, const VkDescriptorImageInfo 
     full_barrier(cb);
 }
 
+// The last 5 s window, for the overlay (menu.cpp): real fps, shown fps, made/s, over-refresh skips/s. Written by the
+// present thread, read by the menu; a torn read only shows one odd number for half a second.
+static volatile double g_fg_pub[4];
+static volatile uint64_t g_fg_pub_at;
+int vk_fg_stats(double out[4]);
+int vk_fg_stats(double out[4]) {
+    uint64_t at = g_fg_pub_at;
+    if (!at || kern_now_ns() - at > 12000000000ull) return 0;
+    for (int i = 0; i < 4; i++) out[i] = g_fg_pub[i];
+    return 1;
+}
+
 static void log_stats(uint64_t now) {
     if (!S.t0) S.t0 = now;
     if (now - S.t0 < 5000000000ull) return;
@@ -309,6 +321,8 @@ static void log_stats(uint64_t now) {
     rt_log("fg: %.1f s: real %.1f fps, shown %.1f fps, made %u; skipped: no history %u, hitch %u, over refresh %u, crop %u; "
            "real cut short %u; late >2 ms %u", s, (double)S.real / s, (double)(S.real + S.made_n) / s, (unsigned)S.made_n,
            (unsigned)S.no_hist, (unsigned)S.hitch, (unsigned)S.over, (unsigned)S.crop, (unsigned)S.cut, (unsigned)S.late);
+    g_fg_pub[0] = (double)S.real / s, g_fg_pub[1] = (double)(S.real + S.made_n) / s;
+    g_fg_pub[2] = (double)S.made_n / s, g_fg_pub[3] = (double)S.over / s, g_fg_pub_at = now;
     S.t0 = now, S.real = S.made_n = S.no_hist = S.hitch = S.over = S.crop = S.cut = S.late = 0;
 }
 
