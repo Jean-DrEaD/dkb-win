@@ -730,6 +730,8 @@ static void rows_render_options(const MenuTarget &target) {
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId smaa[] = {UI_MENU_OFF, UI_MENU_SMAA_LOW, UI_MENU_SMAA_MEDIUM, UI_MENU_SMAA_HIGH};
     opt_choice("TOTK_SMAA", UI_MENU_SMAA, smaa, 4, UI_MENU_SMAA_DESC);
+    static const UiTextId fg[] = {UI_MENU_OFF, UI_MENU_FRAME_GEN_2X};
+    opt_choice("TOTK_FRAME_GEN", UI_MENU_FRAME_GEN, fg, 2, UI_MENU_FRAME_GEN_DESC);
     if (rt_patch_set("fov") >= 0)
         opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
 }

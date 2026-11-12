@@ -97,6 +97,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SMAA] = "Anti-aliasing (SMAA)",
     [UI_MENU_SMAA_DESC] = "Smooths jagged edges in the game image and HUD. Higher settings use more GPU time.",
     [UI_MENU_SMAA_LOW] = "Low", [UI_MENU_SMAA_MEDIUM] = "Medium", [UI_MENU_SMAA_HIGH] = "High",
+    [UI_MENU_FRAME_GEN] = "Frame generation",
+    [UI_MENU_FRAME_GEN_DESC] = "Makes a frame between each two of the game's, so 30 fps is shown as 60. Experimental; can add artifacts in fast motion.",
+    [UI_MENU_FRAME_GEN_2X] = "2x",
     [UI_MENU_COLOR] = "Color",
     [UI_MENU_COLOR_PRESET] = "Color profile",
     [UI_MENU_COLOR_PRESET_DESC] = "Game default uses the original colors.\nVivid (OLED) boosts contrast and color.\n"
@@ -435,6 +438,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SMAA_DESC] = "Сглаживает лесенки на готовой картинке после масштабирования под окно и до отрисовки этого "
                           "меню. Интерфейс игры тоже сглаживается. Чем выше качество, тем больше нагрузка на GPU.",
     [UI_MENU_SMAA_LOW] = "Низкое", [UI_MENU_SMAA_MEDIUM] = "Среднее", [UI_MENU_SMAA_HIGH] = "Высокое",
+    [UI_MENU_FRAME_GEN] = "Frame generation",
+    [UI_MENU_FRAME_GEN_DESC] = "Makes a frame between each two of the game's, so 30 fps is shown as 60. Experimental; can add artifacts in fast motion.",
+    [UI_MENU_FRAME_GEN_2X] = "2x",
     [UI_MENU_COLOR] = "Цвет",
     [UI_MENU_COLOR_PRESET] = "Цветовой профиль",
     [UI_MENU_COLOR_PRESET_DESC] = "Задаёт четыре значения ниже. «Яркий»: больше контраста и насыщенности, тени немного "
