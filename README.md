@@ -4,9 +4,11 @@
 # DKB Recomp
 
 <!-- novidades -->
-## What's new in v0.3.5
-- `Instalador.exe`: single-file installer. `.nup` dumps are now read correctly (base, update 3.2.0 and DLC). Full notes: [RELEASE_NOTES.md](RELEASE_NOTES.md)
-- **How to use:** run `Instalador.exe`, choose your game files and click **Build the game** (~45 min).
+## What's new in v0.3.7
+- Synced with upstream (67 commits): runtime, rendering and performance fixes.
+- **Frame generation (experimental)** in the in-game menu, plus a `Frame gen` line in the full overlay.
+- Fixed the game title showing `Ver. 0.0.0`, and the window now opens in the foreground.
+- Full notes: [RELEASE_NOTES.md](RELEASE_NOTES.md)
 <!-- /novidades -->
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
@@ -23,7 +25,7 @@ compiled into one executable. Based on [DKB Recomp](https://github.com/Lucas-bli
 
 ## Status
 
-**Playable** 
+**Playable**
 
 - Base 1.0.0 and update 3.2.0
 - DLC
@@ -36,6 +38,16 @@ compiled into one executable. Based on [DKB Recomp](https://github.com/Lucas-bli
 - 16 GB of RAM
 - About 25 GB of free space, on a path without accented characters
 
+## Before building: shader cache
+
+Shader preparation compiles ~34,000 variants (~18 min) and stores them in the driver cache. If that cache is too
+small, the driver drops part of it and the first boot gets a **black screen or a frozen cutscene**.
+
+- **NVIDIA:** NVIDIA Control Panel → Manage 3D settings → **Shader Cache Size → Unlimited** → Apply.
+- **AMD (untested):** AMD Software (Adrenalin) → Gaming → Graphics → **Shader Cache: On**. Do not use "Reset Shader Cache" after building.
+
+If the game was already built with a limited cache, change the setting and build again.
+
 ## How to use
 
 1. Download `Instalador.exe` from the [latest release](../../releases/latest).
@@ -43,7 +55,22 @@ compiled into one executable. Based on [DKB Recomp](https://github.com/Lucas-bli
 3. Choose your game files and click **Build the game** (~45 min).
 4. Start `dkb.exe` from the output folder.
 
-On the first run some textures may be black while the shader cache is built. This is normal.
+## In-game menu
+
+Press **F1** (or **Esc**) to open the menu.
+
+### Frame generation (experimental)
+
+*Graphics → Frame generation* (`off` / `2x`, off by default). It inserts one generated frame per real frame, but
+drops the generated frames when twice the FPS exceeds the monitor refresh rate.
+
+| Monitor | Game | Result |
+|---|---|---|
+| 60 Hz | 60 fps | no effect (`refresh cap`) |
+| 60 Hz | ≤ 30 fps | ~60 shown, with more latency |
+| 120/144 Hz | 60 fps | ~120 shown |
+
+**On a 60 Hz monitor, leave it off.** The full overlay shows the state on the `Frame gen` line (real → shown fps).
 
 ## Credits
 
@@ -59,14 +86,3 @@ keeps its own license. The license grants nothing for Nintendo's game.
 
 Independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Donkey Kong Bananza* and
 *Nintendo Switch 2* are trademarks of Nintendo.
-
-## ⚠️ Antes de criar o jogo: cache de shaders
-
-O preparo dos shaders compila ~34 mil variantes (~18 min) e guarda tudo no cache do driver.
-Se o cache for pequeno, o driver descarta parte e o 1º boot fica com **tela preta / cutscene travada**.
-
-**NVIDIA:** Painel de Controle NVIDIA → Gerenciar configurações 3D → **Tamanho do cache de sombreador → Ilimitado** → Aplicar. Depois rode o **Criar**.
-
-**AMD (não testado):** AMD Software (Adrenalin) → Jogos → Gráficos → **Cache de sombreador: Ativado**. Não use "Redefinir cache de sombreador" depois do Criar.
-
-Se o jogo já foi criado com cache limitado: ajuste a opção e rode o **Criar** de novo.
