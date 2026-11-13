@@ -124,9 +124,31 @@ static class Ferramentas
             await Download(NetUrl, zip, log, ct);
             ZipFile.ExtractToDirectory(zip, Path.GetDirectoryName(t.Dotnet)!, true);
         }
+        await GetTranslator(t, log, ct);
         try { Directory.Delete(tmp, true); } catch { }
         if (t.Root.Any(c => c > 126)) log("[AVISO] Pasta com acento/caractere especial: prefira C:\\DKB");
         File.WriteAllText(Path.Combine(t.Dir, ".ready"), Tools.Tag); log("Ferramentas prontas.");
+    }
+
+    static async Task GetTranslator(Tools t, Action<string> log, CancellationToken ct)
+    {
+        var dir = Path.Combine(t.Src, "build", "xlate");
+        var exe = Path.Combine(dir, "totk_xlate.exe"); var id = Path.Combine(dir, "totk_xlate.id");
+        if (File.Exists(exe) && File.Exists(id)) return;
+        log("== Tradutor de shaders (pronto, sem Visual Studio) ==");
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var baseUrl = "https://github.com/Jean-DrEaD/dkb-win/releases/download/" + Tools.Tag + "/";
+            await Download(baseUrl + "totk_xlate.id", id, log, ct);
+            await Download(baseUrl + "totk_xlate.exe", exe, log, ct);
+            if (new FileInfo(exe).Length < 1_000_000) throw new Exception("arquivo incompleto");
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            try { File.Delete(exe); File.Delete(id); } catch { }
+            log("[AVISO] Tradutor pronto indisponivel (" + e.Message + "). O instalador vai tentar compilar, o que exige o Visual Studio.");
+        }
     }
 
     static async Task Download(string url, string to, Action<string> log, CancellationToken ct)

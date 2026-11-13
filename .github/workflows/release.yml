@@ -6,13 +6,41 @@ on:
 permissions:
   contents: write
 jobs:
+  translator:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compilar totk_xlate (NativeAOT)
+        shell: pwsh
+        run: |
+          python tools/build_xlate.py --out out-xlate
+          if ($LASTEXITCODE -ne 0) { throw "build_xlate.py falhou" }
+          if (-not (Test-Path out-xlate\totk_xlate.exe) -or -not (Test-Path out-xlate\totk_xlate.id)) { throw "totk_xlate.exe/.id nao gerados" }
+          if ((Get-Item out-xlate\totk_xlate.exe).Length -lt 1MB) { throw "totk_xlate.exe pequeno demais" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tradutor
+          path: |
+            out-xlate/totk_xlate.exe
+            out-xlate/totk_xlate.id
   build:
+    needs: translator
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+      - uses: actions/download-artifact@v4
+        with:
+          name: Tradutor
+          path: out-xlate
       - name: Publicar Instalador.exe
         shell: pwsh
         run: |
@@ -25,9 +53,13 @@ jobs:
         with:
           name: Instalador
           path: Instalador.exe
-      - name: Anexar na release
+      - name: Anexar na release (pre-lancamento ate o teste no Sandbox)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: Instalador.exe
-          make_latest: true
+          files: |
+            Instalador.exe
+            out-xlate/totk_xlate.exe
+            out-xlate/totk_xlate.id
+          prerelease: true
+          make_latest: 'false'
