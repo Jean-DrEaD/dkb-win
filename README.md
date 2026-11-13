@@ -4,7 +4,7 @@
 # DKB Recomp
 
 <!-- novidades -->
-## What's new in v0.3.7
+## What's new in v0.3.8
 - Synced with upstream (67 commits): runtime, rendering and performance fixes.
 - **Frame generation (experimental)** in the in-game menu, plus a `Frame gen` line in the full overlay.
 - Fixed the game title showing `Ver. 0.0.0`, and the window now opens in the foreground.
