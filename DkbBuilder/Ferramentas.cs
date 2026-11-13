@@ -9,7 +9,7 @@ namespace DkbBuilder;
 
 sealed class Tools
 {
-    public const string Tag = "v0.3.7";
+    public const string Tag = "v0.3.8";
     public string Version => Tag;
     public string Root = "";
     public string Dir => Path.Combine(Root, "tools");

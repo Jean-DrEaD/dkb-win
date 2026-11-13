@@ -123,8 +123,7 @@ def release_layout(root):
 def dev_layout(root):
     if not WIN:
         return dev_layout_posix(root)
-    commit = subprocess.run(['git', '-C', str(root), 'rev-parse', '--short', 'HEAD'], capture_output=True,
-                            text=True).stdout.strip()
+    commit = dev_commit(root)
     embed = root / 'build' / 'py314-embed' / 'py' / ('python' + EXE)
     trees = sorted(p.parent.parent for p in (root / 'toolchain').glob('llvm-mingw-*/llvm-mingw-*/bin/clang' + EXE))
     deps = root / 'toolchain' / 'deps-mingw'
@@ -142,8 +141,11 @@ def dev_layout(root):
 
 
 def dev_commit(root):
-    return subprocess.run(['git', '-C', str(root), 'rev-parse', '--short', 'HEAD'], capture_output=True,
-                          text=True).stdout.strip()
+    try:
+        return subprocess.run(['git', '-C', str(root), 'rev-parse', '--short', 'HEAD'], capture_output=True,
+                              text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):   # sem git (sandbox): versao so do VERSION
+        return ''
 
 
 def dev_layout_posix(root):

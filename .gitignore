@@ -87,3 +87,10 @@ DkbBuilder/**/tools/
 
 bin/
 obj/
+devlog*.md
+*.bak
+dkb-builder/
+upstream/
+upstream-dkb/
+dkb-pc-recomp/
+backup_bananas/
