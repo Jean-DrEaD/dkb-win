@@ -5,6 +5,11 @@
 
 <!-- novidades -->
 ## What's new in v0.3.8
+- Works on clean PCs: **no Git and no Visual Studio needed** (the shader translator is prebuilt and downloaded from the release).
+- Run `Instalador.exe` from a normal folder (e.g. Downloads), not a read-only/network folder.
+- The build takes about 1 hour and needs plenty of RAM (~24 GB incl. pagefile).
+
+## What's new in v0.3.7
 - Synced with upstream (67 commits): runtime, rendering and performance fixes.
 - **Frame generation (experimental)** in the in-game menu, plus a `Frame gen` line in the full overlay.
 - Fixed the game title showing `Ver. 0.0.0`, and the window now opens in the foreground.
