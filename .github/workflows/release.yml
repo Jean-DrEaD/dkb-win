@@ -16,6 +16,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Conferir versao (VERSION x Tag do Builder x tag do git)
+        shell: pwsh
+        run: |
+          $ver = (Get-Content VERSION -Raw).Trim()
+          $cs = Get-Content DkbBuilder/Ferramentas.cs -Raw
+          if ($cs -notmatch 'public const string Tag = "([^"]+)"') { throw "Tag nao encontrada em Ferramentas.cs" }
+          $tagCs = $Matches[1]
+          Write-Host "VERSION=$ver | Ferramentas.cs Tag=$tagCs | git ref=$env:GITHUB_REF_NAME"
+          if ($tagCs -ne "v$ver") { throw "Tag do Builder ($tagCs) difere de VERSION (v$ver)" }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$ver") { throw "tag do git ($env:GITHUB_REF_NAME) difere de VERSION (v$ver)" }
       - name: Compilar totk_xlate (NativeAOT)
         shell: pwsh
         run: |
