@@ -4,6 +4,11 @@
 # DKB Recomp
 
 <!-- novidades -->
+## What's new in v0.3.10
+- Synced with upstream (`fac48bc..f7f0ca9`): DK keeps moving on walls and ceilings above 60 fps (#201), and `scene_res` now also works on update 3.2.0.
+- NVIDIA DLSS is now listed in the in-game upscaler setting (it takes effect at the next start).
+- Shorter stall when a level changes, fewer locks in parallel replay, a recorder fix (write-combining buffers) and a fix for mine voxels on AMD RDNA 1/2.
+
 ## What's new in v0.3.9
 - Synced with upstream (`a5796d9..fac48bc`): scene resolution, depth twins, quads, parallel replay threads, AMD recorder fixes and new tests.
 - Version shown in the in-game menu now reads `0.3.9` (from the `VERSION` file).
