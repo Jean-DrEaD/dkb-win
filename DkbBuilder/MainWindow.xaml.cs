@@ -57,6 +57,7 @@ public partial class MainWindow : Window
         };
         Loaded += (_, _) => Start();
         var tools = Tools.Find();
+        VersionTag.Text = "DKB Builder " + Tools.Tag + (tools != null && Ferramentas.SrcVersion(tools) != "?" ? "  |  source " + Ferramentas.SrcVersion(tools) : "");
         ToolsNote.Text = tools != null
             ? "Nothing else to install: DKB's own build tools are here, downloaded and checked by its setup."
             : "DKB's build tools are missing from its folder. Press Build and DKB offers to download them again.";

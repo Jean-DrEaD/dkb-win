@@ -30,7 +30,7 @@ static class Ferramentas
     static readonly string[] Pkgs = { "vulkan-memory-allocator", "libvpx", "dav1d", "volk", "clang", "lld", "sdl3", "opus", "zstd", "ninja", "vulkan-headers", "vulkan-loader", "pkgconf" };
 
     static readonly HttpClient Http = MakeHttp();
-    public static bool Ready(Tools t) { var f = Path.Combine(t.Dir, ".ready"); return File.Exists(f) && File.ReadAllText(f).Trim() == Tools.Tag; }
+    public static bool Ready(Tools t) { var f = Path.Combine(t.Dir, ".ready"); return File.Exists(f) && File.ReadAllText(f).Trim() == Tools.Tag && !SourceStale(t); }
     static HttpClient MakeHttp() { var h = new HttpClient { Timeout = Timeout.InfiniteTimeSpan }; h.DefaultRequestHeaders.UserAgent.ParseAdd("DkbBuilder"); return h; }
 
     static readonly SemaphoreSlim Gate = new(1, 1);
@@ -44,14 +44,16 @@ static class Ferramentas
     {
         Directory.CreateDirectory(t.Dir);
         var tmp = Path.Combine(t.Dir, "_downloads"); Directory.CreateDirectory(tmp);
+        log("== DKB Builder " + Tools.Tag + " | codigo-fonte " + SourceInfo(t) + " ==");
 
         var srcOk = File.Exists(t.Src + "\\.ok") ? File.ReadAllText(t.Src + "\\.ok").Trim() : "";
-        if (srcOk != Tools.Tag && srcOk != "main")
+        if ((srcOk != Tools.Tag && srcOk != "main") || SourceStale(t))
         {
+            if (SourceStale(t)) log("[AVISO] o codigo-fonte guardado em tools\\src e da VERSION " + SrcVersion(t) + ", nao da " + Tools.Tag + " (tag movida?): baixando de novo");
             log("== Codigo-fonte " + Tools.Tag + " ==");
             string url; var got = Tools.Tag;
             try { using (var doc = JsonDocument.Parse(await Http.GetStringAsync(RelApi, ct))) url = doc.RootElement.GetProperty("zipball_url").GetString()!; }
-            catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound) { url = "https://api.github.com/repos/Jean-DrEaD/dkb-win/zipball/main"; got = "main"; log("[AVISO] release " + Tools.Tag + " ainda nao existe: usando main"); }
+            catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound) { throw new Exception("A release " + Tools.Tag + " nao existe no GitHub (ou ainda nao foi publicada). Este Builder e o " + Tools.Tag + ": baixe o Instalador.exe da release mais nova, ou espere o CI terminar. Nada foi baixado nem compilado."); }
             var zip = Path.Combine(tmp, "src.zip");
             await Download(url, zip, log, ct);
             var part = t.Src + ".part"; if (Directory.Exists(part)) Directory.Delete(part, true);
@@ -59,6 +61,15 @@ static class Ferramentas
             var inner = Directory.GetDirectories(part).First();
             if (Directory.Exists(t.Src)) Directory.Delete(t.Src, true);
             Directory.Move(inner, t.Src); Directory.Delete(part, true);
+            {
+                var sv = SrcVersion(t);
+                if (got == Tools.Tag && sv != Tools.Tag.TrimStart('v'))
+                {
+                    try { Directory.Delete(t.Src, true); } catch { }
+                    throw new Exception("A release " + Tools.Tag + " traz codigo da VERSION " + sv + " (a tag aponta para um commit desatualizado). Nada foi compilado: avise o autor.");
+                }
+                log("codigo-fonte baixado: VERSION " + sv);
+            }
             File.WriteAllText(t.Src + "\\.ok", got); { var pipOk = Path.Combine(Path.GetDirectoryName(t.Python)!, ".pip-ok"); if (File.Exists(pipOk)) File.Delete(pipOk); }
         }
 
@@ -128,6 +139,37 @@ static class Ferramentas
         try { Directory.Delete(tmp, true); } catch { }
         if (t.Root.Any(c => c > 126)) log("[AVISO] Pasta com acento/caractere especial: prefira C:\\DKB");
         File.WriteAllText(Path.Combine(t.Dir, ".ready"), Tools.Tag); log("Ferramentas prontas.");
+    }
+
+    /// VERSION do codigo-fonte guardado em tools\src ("?" se nao houver)
+    public static string SrcVersion(Tools t)
+    {
+        try { var vf = Path.Combine(t.Src, "VERSION"); return File.Exists(vf) ? File.ReadAllText(vf).Trim() : "?"; }
+        catch { return "?"; }
+    }
+
+    /// Codigo-fonte guardado com a marca desta tag, mas de OUTRA versao (ex.: tag movida depois do download).
+    /// Marca "main" = modo desenvolvimento (voce colocou o codigo la): nunca mexe.
+    static bool SourceStale(Tools t)
+    {
+        try
+        {
+            var okf = t.Src + "\\.ok";
+            if (!File.Exists(okf) || File.ReadAllText(okf).Trim() != Tools.Tag) return false;
+            var sv = SrcVersion(t);
+            return sv != "?" && sv != Tools.Tag.TrimStart('v');
+        }
+        catch { return false; }
+    }
+
+    /// texto curto para o log: de onde veio o codigo-fonte e qual a VERSION dele
+    public static string SourceInfo(Tools t)
+    {
+        string ok = "?";
+        try { var okf = t.Src + "\\.ok"; if (File.Exists(okf)) ok = File.ReadAllText(okf).Trim(); } catch { }
+        var sv = SrcVersion(t);
+        var aviso = sv != "?" && sv != Tools.Tag.TrimStart('v') ? " [AVISO: difere do Builder " + Tools.Tag + "]" : "";
+        return "VERSION " + sv + " (origem: " + ok + ")" + aviso;
     }
 
     static async Task GetTranslator(Tools t, Action<string> log, CancellationToken ct)
@@ -203,6 +245,7 @@ sealed class Runner
         {
             L("@@stage read");
             await Ferramentas.Prepare(t, L, cts.Token);
+            L("== DKB Builder " + t.Version + " | codigo-fonte " + Ferramentas.SourceInfo(t) + " ==");
             var dest = Get("--out") ?? Get("--update") ?? Path.Combine(t.Root, "jogo");
                 var exefs = Get("--exefs"); var romfs = Get("--romfs"); var nup = Get("--nup");
                 if ((exefs == null || romfs == null) && nup != null)

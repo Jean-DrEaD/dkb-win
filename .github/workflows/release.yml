@@ -54,11 +54,15 @@ jobs:
       - name: Publicar Instalador.exe
         shell: pwsh
         run: |
-          dotnet publish DkbBuilder/DkbBuilder.csproj -c Release -r win-x64 --self-contained true `
+          $ver = (Get-Content VERSION -Raw).Trim()
+          dotnet publish DkbBuilder/DkbBuilder.csproj -c Release -r win-x64 --self-contained true -p:Version=$ver `
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:EnableCompressionInSingleFile=true -o out
           Copy-Item out\DkbBuilder.exe Instalador.exe
           if ((Get-Item Instalador.exe).Length -lt 10MB) { throw "Instalador.exe pequeno demais" }
+          $fv = (Get-Item Instalador.exe).VersionInfo.FileVersion
+          Write-Host "Instalador.exe FileVersion=$fv | VERSION=$ver"
+          if (-not "$fv".StartsWith($ver)) { throw "Instalador.exe saiu com a versao '$fv', esperado $ver" }
       - uses: actions/upload-artifact@v4
         with:
           name: Instalador

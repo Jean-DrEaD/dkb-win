@@ -281,6 +281,10 @@
       </Grid>
     </Grid>
 
+    <!-- which Builder this is (and which source it holds): seen at a glance, before anything is built -->
+    <TextBlock x:Name="VersionTag" Style="{StaticResource Faint}" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Top"
+               Margin="0,17,104,0" IsHitTestVisible="False" Panel.ZIndex="9"/>
+
     <!-- the window's own buttons, over everything -->
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,6,6,0" Panel.ZIndex="9"
                 WindowChrome.IsHitTestVisibleInChrome="True">
